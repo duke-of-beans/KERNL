@@ -1,0 +1,56 @@
+{
+  "name": "kernl-mcp",
+  "version": "5.0.1",
+  "description": "KERNL - The Core Intelligence Layer for AI Systems. Persistent intelligence MCP server with crash recovery, semantic search, and system control.",
+  "main": "dist/index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc && node scripts/copy-schemas.js",
+    "build:watch": "tsc --watch",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "clean": "rimraf dist"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "claude",
+    "persistent-intelligence",
+    "crash-recovery",
+    "semantic-search",
+    "system-control"
+  ],
+  "author": "David Kirsch",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.5.0",
+    "@xenova/transformers": "^2.17.2",
+    "better-sqlite3": "^11.0.0",
+    "chokidar": "^3.6.0",
+    "exceljs": "^4.4.0",
+    "pdf-lib": "^1.17.1",
+    "pdf-parse": "^1.1.1",
+    "puppeteer": "^21.0.0",
+    "puppeteer-core": "^21.0.0",
+    "sharp": "^0.33.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.0.0",
+    "@types/pdf-parse": "^1.1.4",
+    "rimraf": "^5.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dwasnwk/kernl-mcp.git"
+  }
+}

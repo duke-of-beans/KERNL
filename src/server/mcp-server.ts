@@ -27,6 +27,11 @@ import { processManagementTools, createProcessManagementHandlers } from '../tool
 import { streamingSearchTools, createStreamingSearchHandlers } from '../tools/streaming-search.js';
 import { systemFileTools, createSystemFileHandlers } from '../tools/system-files.js';
 import { configMetaTools, createConfigMetaHandlers } from '../tools/config-meta.js';
+// Phase 4: Chrome Automation
+import { chromeTools, createChromeHandlers } from '../chrome/chrome-tools.js';
+// Phase 5: Shadow Docs and Git
+import { shadowDocTools, createShadowDocHandlers } from '../tools/shadow-docs.js';
+import { gitTools, createGitHandlers } from '../tools/git-tools.js';
 
 export class KernlMCPServer {
   private server: Server;
@@ -162,6 +167,36 @@ export class KernlMCPServer {
       }
     }
 
+    // Phase 4: Chrome Automation Tools
+    const chromeHandlers = createChromeHandlers();
+    for (const tool of chromeTools) {
+      this.tools.set(tool.name, tool);
+      const handler = chromeHandlers[tool.name as keyof typeof chromeHandlers];
+      if (handler) {
+        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
+      }
+    }
+
+    // Phase 5: Shadow Documentation Tools
+    const shadowHandlers = createShadowDocHandlers(this.db);
+    for (const tool of shadowDocTools) {
+      this.tools.set(tool.name, tool);
+      const handler = shadowHandlers[tool.name as keyof typeof shadowHandlers];
+      if (handler) {
+        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
+      }
+    }
+
+    // Phase 5: Git Tools
+    const gitHandlers = createGitHandlers(this.db);
+    for (const tool of gitTools) {
+      this.tools.set(tool.name, tool);
+      const handler = gitHandlers[tool.name as keyof typeof gitHandlers];
+      if (handler) {
+        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
+      }
+    }
+
     // Version tool
     const versionTool: Tool = {
       name: 'kernl_version',
@@ -175,7 +210,7 @@ export class KernlMCPServer {
       description: 'The Core Intelligence Layer for AI Systems',
       status: 'rebuilding',
       toolCount: this.tools.size,
-      categories: ['Session', 'Project', 'Filesystem', 'Intelligence', 'Patterns', 'Gates', 'Process', 'Search', 'Files', 'Config']
+      categories: ['Session', 'Project', 'Filesystem', 'Intelligence', 'Patterns', 'Gates', 'Process', 'Search', 'Files', 'Config', 'Chrome', 'ShadowDocs', 'Git']
     }));
 
     console.error(`[KERNL] Registered ${this.tools.size} tools`);

@@ -531,14 +531,15 @@ export class ProjectDatabase {
   createShadowDoc(doc: Omit<ShadowDoc, 'id' | 'createdAt' | 'status'>): ShadowDoc {
     const now = new Date().toISOString();
     const stmt = this.db.prepare(`
-      INSERT INTO shadow_docs (project_id, file_path, content, commit_with, status, created_at)
-      VALUES (?, ?, ?, ?, 'pending', ?)
+      INSERT INTO shadow_docs (project_id, file_path, content, mode, commit_with, status, created_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', ?)
     `);
 
     const result = stmt.run(
       doc.projectId,
       doc.filePath,
       doc.content,
+      doc.mode || 'append',
       doc.commitWith || 'next_code_commit',
       now
     );
@@ -546,6 +547,7 @@ export class ProjectDatabase {
     return {
       ...doc,
       id: result.lastInsertRowid as number,
+      mode: doc.mode || 'append',
       status: 'pending',
       commitWith: doc.commitWith || 'next_code_commit',
       createdAt: now,
@@ -565,6 +567,7 @@ export class ProjectDatabase {
       projectId: row.project_id,
       filePath: row.file_path,
       content: row.content,
+      mode: row.mode as ShadowDoc['mode'],
       commitWith: row.commit_with,
       status: row.status as ShadowDoc['status'],
       createdAt: row.created_at,
@@ -789,6 +792,7 @@ interface ShadowDocRow {
   project_id: string;
   file_path: string;
   content: string;
+  mode: string;
   commit_with: string;
   status: string;
   created_at: string;

@@ -3,21 +3,23 @@
  * Version: 5.0.1
  *
  * The core MCP server that exposes all tools to Claude.
- * Handles tool registration, request routing, and error handling.
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, } from '@modelcontextprotocol/sdk/types.js';
 import { ProjectDatabase } from '../storage/database.js';
-// Tool imports will be added as we implement them
-// import { stateManagementTools, createStateManagementHandlers } from '../tools/state-management.js';
+// Tool imports
+import { stateManagementTools, createStateManagementHandlers } from '../tools/state-management.js';
+import { projectOperationsTools, createProjectOperationsHandlers } from '../tools/project-operations.js';
+import { fileOperationsTools, createFileOperationsHandlers } from '../tools/file-operations.js';
 export class KernlMCPServer {
     server;
     db;
     tools;
     handlers;
     constructor() {
-        const dbPath = process.env.PROJECT_MIND_DB ||
+        const dbPath = process.env.PROJECT_MIND_DB_PATH ||
+            process.env.PROJECT_MIND_DB ||
             process.env.KERNL_DB ||
             'D:/Projects/Project Mind/kernl-mcp/data/project-mind.db';
         this.db = new ProjectDatabase(dbPath);
@@ -36,26 +38,47 @@ export class KernlMCPServer {
         this.setupErrorHandling();
     }
     registerAllTools() {
-        // Placeholder: Tools will be registered here as we implement them
-        // For now, register a simple test tool
-        const testTool = {
+        // State Management Tools
+        const stateHandlers = createStateManagementHandlers(this.db);
+        for (const tool of stateManagementTools) {
+            this.tools.set(tool.name, tool);
+            const handler = stateHandlers[tool.name];
+            if (handler) {
+                this.handlers.set(tool.name, handler);
+            }
+        }
+        // Project Operations Tools  
+        const projectHandlers = createProjectOperationsHandlers(this.db);
+        for (const tool of projectOperationsTools) {
+            this.tools.set(tool.name, tool);
+            const handler = projectHandlers[tool.name];
+            if (handler) {
+                this.handlers.set(tool.name, handler);
+            }
+        }
+        // File Operations Tools
+        const fileHandlers = createFileOperationsHandlers(this.db);
+        for (const tool of fileOperationsTools) {
+            this.tools.set(tool.name, tool);
+            const handler = fileHandlers[tool.name];
+            if (handler) {
+                this.handlers.set(tool.name, handler);
+            }
+        }
+        // Version tool
+        const versionTool = {
             name: 'kernl_version',
-            description: 'Get KERNL version information',
-            inputSchema: {
-                type: 'object',
-                properties: {},
-            },
+            description: 'Get KERNL version and status information',
+            inputSchema: { type: 'object', properties: {} },
         };
-        this.tools.set(testTool.name, testTool);
+        this.tools.set(versionTool.name, versionTool);
         this.handlers.set('kernl_version', async () => ({
-            success: true,
-            data: {
-                name: 'KERNL',
-                version: '5.0.1',
-                description: 'The Core Intelligence Layer for AI Systems',
-                status: 'rebuilding',
-                toolCount: this.tools.size,
-            },
+            name: 'KERNL',
+            version: '5.0.1',
+            description: 'The Core Intelligence Layer for AI Systems',
+            status: 'rebuilding',
+            toolCount: this.tools.size,
+            categories: ['Session', 'Project', 'Filesystem']
         }));
         console.error(`[KERNL] Registered ${this.tools.size} tools`);
     }
@@ -72,48 +95,21 @@ export class KernlMCPServer {
             const handler = this.handlers.get(name);
             if (!handler) {
                 return {
-                    content: [
-                        {
-                            type: 'text',
-                            text: JSON.stringify({
-                                success: false,
-                                error: {
-                                    code: 'TOOL_NOT_FOUND',
-                                    message: `Unknown tool: ${name}`,
-                                },
-                            }),
-                        },
-                    ],
+                    content: [{ type: 'text', text: JSON.stringify({ error: `Unknown tool: ${name}` }) }],
                     isError: true,
                 };
             }
             try {
                 const result = await handler(args ?? {});
                 return {
-                    content: [
-                        {
-                            type: 'text',
-                            text: JSON.stringify(result, null, 2),
-                        },
-                    ],
+                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
                 };
             }
             catch (error) {
                 const errorMessage = error instanceof Error ? error.message : 'Unknown error';
                 console.error(`[KERNL] Error in ${name}:`, errorMessage);
                 return {
-                    content: [
-                        {
-                            type: 'text',
-                            text: JSON.stringify({
-                                success: false,
-                                error: {
-                                    code: 'EXECUTION_ERROR',
-                                    message: errorMessage,
-                                },
-                            }),
-                        },
-                    ],
+                    content: [{ type: 'text', text: JSON.stringify({ error: errorMessage }) }],
                     isError: true,
                 };
             }
@@ -124,12 +120,6 @@ export class KernlMCPServer {
             console.error('[KERNL] Server error:', error);
         };
         process.on('SIGINT', () => {
-            console.error('[KERNL] Shutting down...');
-            this.shutdown();
-            process.exit(0);
-        });
-        process.on('SIGTERM', () => {
-            console.error('[KERNL] Terminating...');
             this.shutdown();
             process.exit(0);
         });
@@ -142,12 +132,8 @@ export class KernlMCPServer {
         console.error('[KERNL] Server running. Waiting for requests...');
     }
     shutdown() {
-        console.error('[KERNL] Closing database...');
+        console.error('[KERNL] Shutting down...');
         this.db.close();
-        console.error('[KERNL] Shutdown complete.');
-    }
-    getDatabase() {
-        return this.db;
     }
 }
 //# sourceMappingURL=mcp-server.js.map

@@ -150,4 +150,15 @@ export class KernlMCPServer {
   }
 
   async run(): Promise<void> {
-    c
+    const transport = new StdioServerTransport();
+    console.error('[KERNL] Starting server v5.0.1...');
+    console.error('[KERNL] The Core Intelligence Layer for AI Systems');
+    await this.server.connect(transport);
+    console.error('[KERNL] Server running. Waiting for requests...');
+  }
+
+  shutdown(): void {
+    console.error('[KERNL] Shutting down...');
+    this.db.close();
+  }
+}

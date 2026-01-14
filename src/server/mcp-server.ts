@@ -22,6 +22,11 @@ import { fileOperationsTools, createFileOperationsHandlers } from '../tools/file
 import { semanticSearchTools, createSemanticSearchHandlers } from '../tools/semantic-search.js';
 import { patternRecognitionTools, createPatternRecognitionHandlers } from '../tools/pattern-recognition.js';
 import { parallelGatesTools, createParallelGatesHandlers } from '../tools/parallel-gates.js';
+// Phase 3: Desktop Commander Parity
+import { processManagementTools, createProcessManagementHandlers } from '../tools/process-management.js';
+import { streamingSearchTools, createStreamingSearchHandlers } from '../tools/streaming-search.js';
+import { systemFileTools, createSystemFileHandlers } from '../tools/system-files.js';
+import { configMetaTools, createConfigMetaHandlers } from '../tools/config-meta.js';
 
 export class KernlMCPServer {
   private server: Server;
@@ -117,6 +122,46 @@ export class KernlMCPServer {
       }
     }
 
+    // Phase 3: Process Management Tools
+    const processHandlers = createProcessManagementHandlers();
+    for (const tool of processManagementTools) {
+      this.tools.set(tool.name, tool);
+      const handler = processHandlers[tool.name as keyof typeof processHandlers];
+      if (handler) {
+        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
+      }
+    }
+
+    // Phase 3: Streaming Search Tools
+    const searchHandlers = createStreamingSearchHandlers();
+    for (const tool of streamingSearchTools) {
+      this.tools.set(tool.name, tool);
+      const handler = searchHandlers[tool.name as keyof typeof searchHandlers];
+      if (handler) {
+        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
+      }
+    }
+
+    // Phase 3: System File Tools
+    const sysFileHandlers = createSystemFileHandlers();
+    for (const tool of systemFileTools) {
+      this.tools.set(tool.name, tool);
+      const handler = sysFileHandlers[tool.name as keyof typeof sysFileHandlers];
+      if (handler) {
+        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
+      }
+    }
+
+    // Phase 3: Config & Meta Tools (pass all tools for sys_get_tool_info)
+    const configHandlers = createConfigMetaHandlers(Array.from(this.tools.values()));
+    for (const tool of configMetaTools) {
+      this.tools.set(tool.name, tool);
+      const handler = configHandlers[tool.name as keyof typeof configHandlers];
+      if (handler) {
+        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
+      }
+    }
+
     // Version tool
     const versionTool: Tool = {
       name: 'kernl_version',
@@ -130,7 +175,7 @@ export class KernlMCPServer {
       description: 'The Core Intelligence Layer for AI Systems',
       status: 'rebuilding',
       toolCount: this.tools.size,
-      categories: ['Session', 'Project', 'Filesystem', 'Intelligence', 'Patterns', 'Gates']
+      categories: ['Session', 'Project', 'Filesystem', 'Intelligence', 'Patterns', 'Gates', 'Process', 'Search', 'Files', 'Config']
     }));
 
     console.error(`[KERNL] Registered ${this.tools.size} tools`);

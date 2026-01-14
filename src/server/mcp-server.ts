@@ -18,6 +18,10 @@ import { ProjectDatabase } from '../storage/database.js';
 import { stateManagementTools, createStateManagementHandlers } from '../tools/state-management.js';
 import { projectOperationsTools, createProjectOperationsHandlers } from '../tools/project-operations.js';
 import { fileOperationsTools, createFileOperationsHandlers } from '../tools/file-operations.js';
+// Phase 2: Intelligence Layer
+import { semanticSearchTools, createSemanticSearchHandlers } from '../tools/semantic-search.js';
+import { patternRecognitionTools, createPatternRecognitionHandlers } from '../tools/pattern-recognition.js';
+import { parallelGatesTools, createParallelGatesHandlers } from '../tools/parallel-gates.js';
 
 export class KernlMCPServer {
   private server: Server;
@@ -83,6 +87,36 @@ export class KernlMCPServer {
       }
     }
 
+    // Phase 2: Semantic Search Tools
+    const semanticHandlers = createSemanticSearchHandlers(this.db);
+    for (const tool of semanticSearchTools) {
+      this.tools.set(tool.name, tool);
+      const handler = semanticHandlers[tool.name as keyof typeof semanticHandlers];
+      if (handler) {
+        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
+      }
+    }
+
+    // Phase 2: Pattern Recognition Tools
+    const patternHandlers = createPatternRecognitionHandlers(this.db);
+    for (const tool of patternRecognitionTools) {
+      this.tools.set(tool.name, tool);
+      const handler = patternHandlers[tool.name as keyof typeof patternHandlers];
+      if (handler) {
+        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
+      }
+    }
+
+    // Phase 2: Parallel Gates Tools
+    const gatesHandlers = createParallelGatesHandlers(this.db);
+    for (const tool of parallelGatesTools) {
+      this.tools.set(tool.name, tool);
+      const handler = gatesHandlers[tool.name as keyof typeof gatesHandlers];
+      if (handler) {
+        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
+      }
+    }
+
     // Version tool
     const versionTool: Tool = {
       name: 'kernl_version',
@@ -96,7 +130,7 @@ export class KernlMCPServer {
       description: 'The Core Intelligence Layer for AI Systems',
       status: 'rebuilding',
       toolCount: this.tools.size,
-      categories: ['Session', 'Project', 'Filesystem']
+      categories: ['Session', 'Project', 'Filesystem', 'Intelligence', 'Patterns', 'Gates']
     }));
 
     console.error(`[KERNL] Registered ${this.tools.size} tools`);

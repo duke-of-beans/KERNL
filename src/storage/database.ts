@@ -307,16 +307,53 @@ export class ProjectDatabase {
   // FILE INDEX OPERATIONS
   // ==========================================================================
 
+  /**
+   * Index a file with optional embedding
+   * Supports both positional and options-based calling
+   */
   indexFile(
     projectId: string,
     path: string,
-    fileType: string | null,
-    size: number,
-    contentHash: string,
-    contentPreview: string,
-    embedding: Buffer | null,
+    fileTypeOrOptions?: string | null | {
+      file_type?: string | null;
+      size?: number;
+      content_hash?: string;
+      content_preview?: string;
+      embedding?: Buffer | null;
+      metadata?: Record<string, unknown>;
+    },
+    size?: number,
+    contentHash?: string,
+    contentPreview?: string,
+    embedding?: Buffer | null,
     metadata: Record<string, unknown> = {}
   ): number {
+    // Handle options object
+    let fileType: string | null = null;
+    let finalSize = 0;
+    let finalContentHash = '';
+    let finalContentPreview = '';
+    let finalEmbedding: Buffer | null = null;
+    let finalMetadata: Record<string, unknown> = {};
+
+    if (typeof fileTypeOrOptions === 'object' && fileTypeOrOptions !== null) {
+      // Options-based call
+      fileType = fileTypeOrOptions.file_type ?? null;
+      finalSize = fileTypeOrOptions.size ?? 0;
+      finalContentHash = fileTypeOrOptions.content_hash ?? '';
+      finalContentPreview = fileTypeOrOptions.content_preview ?? '';
+      finalEmbedding = fileTypeOrOptions.embedding ?? null;
+      finalMetadata = fileTypeOrOptions.metadata ?? {};
+    } else {
+      // Positional call
+      fileType = fileTypeOrOptions ?? null;
+      finalSize = size ?? 0;
+      finalContentHash = contentHash ?? '';
+      finalContentPreview = contentPreview ?? '';
+      finalEmbedding = embedding ?? null;
+      finalMetadata = metadata;
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO file_index (project_id, path, file_type, size, content_hash, content_preview, embedding, metadata, indexed_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -334,11 +371,11 @@ export class ProjectDatabase {
       projectId,
       path,
       fileType,
-      size,
-      contentHash,
-      contentPreview,
-      embedding,
-      JSON.stringify(metadata),
+      finalSize,
+      finalContentHash,
+      finalContentPreview,
+      finalEmbedding,
+      JSON.stringify(finalMetadata),
       new Date().toISOString()
     );
 
@@ -350,9 +387,19 @@ export class ProjectDatabase {
     return stmt.get(projectId, path) as FileIndexRow | undefined ?? null;
   }
 
+  // Alias for semantic search compatibility
+  getIndexedFile(projectId: string, path: string): FileIndexRow | null {
+    return this.getFileIndex(projectId, path);
+  }
+
   getProjectFiles(projectId: string): FileIndexRow[] {
     const stmt = this.db.prepare(`SELECT * FROM file_index WHERE project_id = ?`);
     return stmt.all(projectId) as FileIndexRow[];
+  }
+
+  // Alias for semantic search compatibility
+  getIndexedFiles(projectId: string): FileIndexRow[] {
+    return this.getProjectFiles(projectId);
   }
 
   searchFilesByEmbedding(projectId: string, queryEmbedding: Buffer, limit: number = 10): Array<FileIndexRow & { score: number }> {
@@ -543,6 +590,85 @@ export class ProjectDatabase {
   }
 
   // ==========================================================================
+  // PATTERN OPERATIONS
+  // ==========================================================================
+
+  createPattern(pattern: {
+    projectId: string;
+    name: string;
+    problem: string;
+    solution: string;
+    implementation: string | null;
+    metrics: Record<string, unknown> | null;
+    problemEmbedding: Buffer | null;
+  }): number {
+    const now = new Date().toISOString();
+    const stmt = this.db.prepare(`
+      INSERT INTO patterns (project_id, name, problem, solution, implementation, metrics, problem_embedding, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      pattern.projectId,
+      pattern.name,
+      pattern.problem,
+      pattern.solution,
+      pattern.implementation,
+      pattern.metrics ? JSON.stringify(pattern.metrics) : null,
+      pattern.problemEmbedding,
+      now
+    );
+
+    return result.lastInsertRowid as number;
+  }
+
+  getPattern(id: number): PatternData | null {
+    const stmt = this.db.prepare(`SELECT * FROM patterns WHERE id = ?`);
+    const row = stmt.get(id) as PatternRow | undefined;
+    
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      name: row.name,
+      problem: row.problem,
+      solution: row.solution,
+      implementation: row.implementation || undefined,
+      metrics: row.metrics ? JSON.parse(row.metrics) : undefined,
+      problemEmbedding: row.problem_embedding || undefined,
+      createdAt: row.created_at,
+    };
+  }
+
+  getPatterns(projectId?: string): PatternData[] {
+    let query = `SELECT * FROM patterns`;
+    const params: unknown[] = [];
+
+    if (projectId) {
+      query += ` WHERE project_id = ?`;
+      params.push(projectId);
+    }
+
+    query += ` ORDER BY created_at DESC`;
+
+    const stmt = this.db.prepare(query);
+    const rows = (params.length > 0 ? stmt.all(...params) : stmt.all()) as PatternRow[];
+
+    return rows.map(row => ({
+      id: row.id,
+      projectId: row.project_id,
+      name: row.name,
+      problem: row.problem,
+      solution: row.solution,
+      implementation: row.implementation || undefined,
+      metrics: row.metrics ? JSON.parse(row.metrics) : undefined,
+      problemEmbedding: row.problem_embedding || undefined,
+      createdAt: row.created_at,
+    }));
+  }
+
+  // ==========================================================================
   // ACTIVITY LOG
   // ==========================================================================
 
@@ -667,4 +793,28 @@ interface ShadowDocRow {
   status: string;
   created_at: string;
   applied_at: string | null;
+}
+
+interface PatternRow {
+  id: number;
+  project_id: string;
+  name: string;
+  problem: string;
+  solution: string;
+  implementation: string | null;
+  metrics: string | null;
+  problem_embedding: Buffer | null;
+  created_at: string;
+}
+
+interface PatternData {
+  id: number;
+  projectId: string;
+  name: string;
+  problem: string;
+  solution: string;
+  implementation?: string;
+  metrics?: Record<string, unknown>;
+  problemEmbedding?: Buffer;
+  createdAt: string;
 }

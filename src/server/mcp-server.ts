@@ -32,6 +32,9 @@ import { chromeTools, createChromeHandlers } from '../chrome/chrome-tools.js';
 // Phase 5: Shadow Docs and Git
 import { shadowDocTools, createShadowDocHandlers } from '../tools/shadow-docs.js';
 import { gitTools, createGitHandlers } from '../tools/git-tools.js';
+// Phase 6: Backlog and Testing
+import { backlogTools, createBacklogHandlers } from '../tools/backlog-tools.js';
+import { testingTools, createTestingHandlers } from '../tools/testing-tools.js';
 
 export class KernlMCPServer {
   private server: Server;
@@ -197,6 +200,26 @@ export class KernlMCPServer {
       }
     }
 
+    // Phase 6: Backlog Tools
+    const backlogHandlers = createBacklogHandlers(this.db);
+    for (const tool of backlogTools) {
+      this.tools.set(tool.name, tool);
+      const handler = backlogHandlers[tool.name as keyof typeof backlogHandlers];
+      if (handler) {
+        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
+      }
+    }
+
+    // Phase 6: Testing Tools (pass all tools for validation)
+    const testHandlers = createTestingHandlers(Array.from(this.tools.values()));
+    for (const tool of testingTools) {
+      this.tools.set(tool.name, tool);
+      const handler = testHandlers[tool.name as keyof typeof testHandlers];
+      if (handler) {
+        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
+      }
+    }
+
     // Version tool
     const versionTool: Tool = {
       name: 'kernl_version',
@@ -210,7 +233,7 @@ export class KernlMCPServer {
       description: 'The Core Intelligence Layer for AI Systems',
       status: 'rebuilding',
       toolCount: this.tools.size,
-      categories: ['Session', 'Project', 'Filesystem', 'Intelligence', 'Patterns', 'Gates', 'Process', 'Search', 'Files', 'Config', 'Chrome', 'ShadowDocs', 'Git']
+      categories: ['Session', 'Project', 'Filesystem', 'Intelligence', 'Patterns', 'Gates', 'Process', 'Search', 'Files', 'Config', 'Chrome', 'ShadowDocs', 'Git', 'Backlog', 'Testing']
     }));
 
     console.error(`[KERNL] Registered ${this.tools.size} tools`);

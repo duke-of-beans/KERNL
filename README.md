@@ -20,7 +20,7 @@ KERNL solves three critical problems with AI assistants:
 
 ```bash
 # Clone the repository
-git clone https://github.com/duke-of-beans/kernl-mcp.git
+git clone https://github.com/duke-of-beans/KERNL.git
 cd kernl-mcp
 
 # Install dependencies

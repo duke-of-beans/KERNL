@@ -1,85 +1,150 @@
 # KERNL CONTINUATION PROMPT
-## For Seamless Session Handoff
+## For New Session Bootstrap
 
 **Copy everything below the line into a new Claude session:**
 
 ---
 
-# KERNL REBUILD - CONTINUE FROM PHASE 1 COMPLETE
+# KERNL - PRODUCTION SYSTEM
 
 ## CONTEXT
-KERNL (formerly Project Mind) was accidentally deleted during D:\ drive reorganization on January 14, 2026. We're rebuilding from chat history. Phase 1 Foundation is COMPLETE.
+KERNL is a 101-tool persistent intelligence layer for AI systems. Provides crash recovery, semantic search, and system control for Claude Desktop.
+
+**History:** Accidentally deleted January 14, 2026. Fully rebuilt from chat history in 8 hours. Currently in production use.
 
 ## CURRENT STATE
 ```yaml
 location: "D:\Projects\Project Mind\kernl-mcp"
-version: "5.0.1-rebuild"
-tools_rebuilt: 16
-tools_target: 101
-build_status: "✅ Passing"
-git_status: "Clean, committed"
+version: "5.0.1"
+status: "PRODUCTION"
+tools: 101
+categories: 17
+build: "✅ TypeScript Strict (0 errors)"
+tests: "✅ All passing"
 ```
 
-## PHASE 1 COMPLETE ✅
-- Session Management (5 tools): get_session_context, check_resume_needed, auto_checkpoint, mark_complete, get/save_session_state
-- Project Operations (5 tools): pm_register/list/get/update/delete_project  
-- File Operations (6 tools): pm_read/write/search/list/batch_read/get_file_info
-- Database: 17 tables (8 core + 9 chrome)
-- Types, MCP server, build system all working
+## BOOTSTRAP PROTOCOL
 
-## IMMEDIATE NEXT: PHASE 2 - INTELLIGENCE LAYER
-
-Build these tools:
-1. **Embeddings module** (src/intelligence/embeddings.ts)
-   - ONNX runtime with @xenova/transformers
-   - all-MiniLM-L6-v2 model for 384-dim vectors
-   - Vector serialization for SQLite BLOB storage
-
-2. **search_semantic** - Meaning-based code search
-3. **pm_index_files** - Full project indexing with progress
-4. **pm_index_file** - Single file incremental indexing
-5. **suggest_patterns** - Cross-project pattern suggestions
-6. **five_gate_check** - Parallel 5-gate verification
-
-## KEY FILES TO READ FIRST
-```bash
-# Comprehensive instructions
-KERNL:pm_read_file({ project: "kernl", path: "docs/CLAUDE_INSTRUCTIONS_PROJECT.md" })
-
-# Or use Desktop Commander:
-Desktop Commander:read_file({ path: "D:/Projects/Project Mind/kernl-mcp/docs/CLAUDE_INSTRUCTIONS_PROJECT.md" })
-
-# Reconstruction roadmap (in D:\Dev)
-Desktop Commander:read_file({ path: "D:/Dev/KERNL_RECONSTRUCTION_PLAN.md" })
-```
-
-## CHAT HISTORY MINING QUERIES
-Use conversation_search to recover implementation details:
-```
-"ONNX embeddings pipeline transformers xenova"
-"search_semantic cosine similarity vector"
-"five_gate_check parallel verification gates"
-"pm_index_files indexing progress callback"
-```
-
-## STANDARDS
-- TypeScript strict mode, zero errors
-- Conventional commits (feat/fix/docs)
-- Build must pass before commit: `npx tsc --noEmit`
-- 4-pillar doc sync (instructions, tool ref, changelog, backlog)
-
-## START SESSION WITH
+### Step 1: Load Instructions
 ```typescript
-// Verify build still passes
-Desktop Commander:start_process({
-  command: "cd 'D:\\Projects\\Project Mind\\kernl-mcp'; npx tsc --noEmit",
-  timeout_ms: 60000
+// Use KERNL tool if available:
+KERNL:pm_read_file({ 
+  project: "kernl", 
+  path: "docs/CLAUDE_INSTRUCTIONS_PROJECT.md" 
 })
 
-// Then begin Phase 2 implementation
+// Or Desktop Commander:
+Desktop Commander:read_file({ 
+  path: "D:/Projects/Project Mind/kernl-mcp/docs/CLAUDE_INSTRUCTIONS_PROJECT.md" 
+})
+```
+
+### Step 2: Get Session Context
+```typescript
+KERNL:get_session_context({ 
+  project: "kernl", 
+  mode: "auto"  // coding | architecture | debugging | auto
+})
+// Returns: needsResume, checkpoint, mode-specific context
+```
+
+### Step 3: Review Current Status
+```typescript
+// Check what needs doing:
+KERNL:pm_read_file({ 
+  project: "kernl", 
+  path: "BACKLOG_OVERVIEW.md" 
+})
+```
+
+## TOOL CATEGORIES (101 Total)
+
+### Core Foundation (16 tools)
+- Session Management (5): Checkpoints, recovery, state  
+- Project Operations (5): Register, list, update projects
+- File Operations (6): Read, write, search, batch ops
+
+### Intelligence Layer (9 tools)
+- Semantic Search (3): ONNX embeddings, concept search
+- Pattern Recognition (3): Cross-project learning
+- Parallel Gates (3): Five-gate verification
+
+### System Control (20 tools)
+- Process Management (7): Launch, monitor, control
+- Streaming Search (4): Large-scale file search
+- System Files (5): Advanced file ops
+- Config & Meta (4): Version, status, config
+
+### Chrome Automation (19 tools)
+- Session, basic ops, data extraction, intelligence, workflows
+
+### Advanced Features (37 tools)
+- Shadow Docs (4), Git (2), Backlog (5), Testing (4)
+- Utilities (12), Research (10)
+
+## RECENT WORK (January 2026)
+
+### January 14: The Rebuild
+- **09:00** - Accidental deletion during drive reorg
+- **10:00-18:00** - Complete rebuild from chat history
+- **18:00** - All 101 tools operational
+
+**Lesson:** Documentation quality = Recovery speed
+
+### January 29: Repository Polish
+- Updated README with authentic learning journey  
+- Created DEVELOPMENT_JOURNEY.md (comprehensive rebuild story)
+- Updated BACKLOG to show completion
+- Cleaned outdated status indicators
+- **Purpose:** Founder's Associate application (demonstrate systematic methodology)
+
+## KEY DOCUMENTATION
+
+```bash
+README.md                    # Main overview, authentic story
+DEVELOPMENT_JOURNEY.md       # Complete rebuild narrative  
+BACKLOG_OVERVIEW.md          # Tool inventory, roadmap
+docs/CLAUDE_INSTRUCTIONS_PROJECT.md  # Comprehensive usage
+docs/TOOL_REFERENCE.md       # API documentation
+CHANGELOG.md                 # Version history
+```
+
+## IMMEDIATE CONTEXT
+
+**If working on KERNL itself:**
+1. Load CLAUDE_INSTRUCTIONS_PROJECT.md
+2. Check BACKLOG_OVERVIEW.md for priorities
+3. Review recent git commits
+4. TypeScript strict mode (zero tolerance for errors)
+
+**If using KERNL for other projects:**
+1. KERNL:get_session_context({ project: "<your_project>" })
+2. Work normally
+3. KERNL:auto_checkpoint every 2-3 tool calls
+4. KERNL:mark_complete when done
+
+## PHILOSOPHY
+
+```yaml
+build_intelligence_not_plumbing: "Focus on domain logic, not infrastructure"
+option_b_perfection: "10x improvements, not 10%"
+zero_technical_debt: "No mocks, stubs, placeholders, TODOs"
+foundation_out: "Backend before surface"
+aggressive_checkpointing: "Every 2-3 tool calls"
+```
+
+## SUCCESS METRICS
+
+```yaml
+time_saved: "10-15 hours/week"
+crash_recovery: "Minutes instead of hours"
+bootstrap: "30 seconds instead of 10 minutes"
+cross_project_learning: "Operational"
+rebuild_from_docs: "8 hours (proof of documentation quality)"
 ```
 
 ---
 
-**Philosophy:** Build Intelligence, Not Plumbing
-**Target:** 101 tools, 17 categories, 62-83 min/day time savings
+**For new sessions:** Just load CLAUDE_INSTRUCTIONS_PROJECT.md and get_session_context. The system handles the rest.
+
+**Last Updated:** January 29, 2026

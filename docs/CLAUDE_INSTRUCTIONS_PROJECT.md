@@ -1,8 +1,8 @@
 # KERNL MCP - COMPREHENSIVE PROJECT INSTRUCTIONS
-**Version:** 5.0.1 (Rebuild from Chat History)  
-**Updated:** January 14, 2026  
-**Tools:** 16 (Phase 1 Foundation - Growing)  
-**Status:** Rebuilding from chat history after accidental deletion
+**Version:** 5.0.1  
+**Updated:** January 29, 2026  
+**Tools:** 101 (All categories complete)  
+**Status:** Production - Full rebuild complete
 
 ---
 
@@ -24,8 +24,8 @@ problems_solved:
   - "Bootstrap tax": 5-10 minutes lost restoring context each session
   - "Isolated learning": Solutions not transferred across projects
 
-target_tools: 101  # From v5.0.1 before deletion
-current_tools: 16  # Phase 1 foundation rebuilt
+tools_complete: 101  # Full recovery achieved
+categories: 17  # All tool categories operational
 ```
 
 ---
@@ -50,7 +50,7 @@ KERNL:mark_complete({ project: "kernl", summary: "what was done" })
 
 ---
 
-## §3 CURRENT TOOL INVENTORY (Phase 1)
+## §3 TOOL INVENTORY (101 Complete)
 
 ### Session Management (5 tools)
 ```yaml
@@ -83,21 +83,24 @@ pm_get_file_info: "Get file metadata"
 
 ---
 
-## §4 REBUILD ROADMAP
+## §4 REBUILD STATUS
 
-### Phase 1: Foundation ✅ COMPLETE
-- [x] Project structure
-- [x] Database schema (core + chrome)
-- [x] Types definitions
-- [x] Database access layer
-- [x] Session management tools (5)
-- [x] Project operations tools (5)
-- [x] File operations tools (6)
-- [x] MCP server registration
-- [x] Build passing
+**COMPLETE:** All 101 tools across 17 categories operational (rebuilt January 14, 2026)
 
-### Phase 2: Intelligence Layer
-- [ ] ONNX embeddings integration
+### Rebuild Timeline
+- Phase 1: Foundation (16 tools) ✅
+- Phase 2: Intelligence Layer (9 tools) ✅
+- Phase 3: Desktop Commander Parity (20 tools) ✅  
+- Phase 4: Chrome Automation (19 tools) ✅
+- Phase 5: Shadow Docs & Git (6 tools) ✅
+- Phase 6: Backlog & Testing (9 tools) ✅
+- Phase 7: Utilities & Research (22 tools) ✅
+
+**Total rebuild time:** 8 hours (deletion to production)
+
+See [DEVELOPMENT_JOURNEY.md](../DEVELOPMENT_JOURNEY.md) for complete rebuild story.
+
+### All Tool Categories
 - [ ] Semantic search (search_semantic)
 - [ ] File indexing (pm_index_files, pm_index_file)
 - [ ] Pattern system (suggest_patterns)

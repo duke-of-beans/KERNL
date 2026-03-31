@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "slug": "kernl",
+  "brain_entity_id": "97266e2a-166a-4296-bc35-875d9ba087a3",
+  "status": "active",
+  "phase": null,
+  "version": null,
+  "completion_pct": 85,
+  "last_session": "2026-03-31",
+  "last_updated": "2026-03-31",
+  "blockers": [],
+  "next_action": "Audit tool coverage against META-INFRA-01 briefing() spec",
+  "open_tasks": [],
+  "quality": {
+    "test_count": null,
+    "tests_passing": null,
+    "tsc_errors": null,
+    "eos_health": null,
+    "last_scan": null
+  },
+  "signals": {
+    "vercel_url": null,
+    "last_deploy": null,
+    "last_deploy_status": null,
+    "last_commit": null,
+    "last_commit_message": null,
+    "last_commit_date": null,
+    "anthropic_credits_ok": null,
+    "domain_active": null
+  },
+  "metrics": {},
+  "changelog": [
+    {
+      "date": "2026-03-31",
+      "version": null,
+      "sprint": "META-INFRA-DNA-SEED",
+      "summary": "Initial PROJECT_STATE.json created from PRODUCT_GRAPH.yaml and session context during META-INFRA DNA schema migration.",
+      "shipped": [
+        "PROJECT_STATE.json created",
+        "PROJECT_DNA.json created"
+      ]
+    }
+  ],
+  "open_questions": [],
+  "integrations": []
+}

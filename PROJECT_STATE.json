@@ -3,7 +3,7 @@
   "slug": "kernl",
   "brain_entity_id": "97266e2a-166a-4296-bc35-875d9ba087a3",
   "status": "active",
-  "phase": null,
+  "phase": "production",
   "version": null,
   "completion_pct": 85,
   "last_session": "2026-03-31",

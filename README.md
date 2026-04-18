@@ -66,9 +66,9 @@ Add to your `claude_desktop_config.json`:
   "mcpServers": {
     "kernl": {
       "command": "node",
-      "args": ["D:/Projects/Project Mind/kernl-mcp/dist/index.js"],
+      "args": ["/path/to/KERNL/dist/index.js"],
       "env": {
-        "PROJECT_MIND_DB_PATH": "D:/Projects/Project Mind/kernl-mcp/data/project-mind.db"
+        "PROJECT_MIND_DB_PATH": "/path/to/KERNL/data/project-mind.db"
       }
     }
   }
@@ -190,9 +190,7 @@ MIT - See [LICENSE](LICENSE) for details
 
 ## Author
 
-**David Kirsch** - Operations executive and entrepreneur with advanced AI-native development skills. Built this system to eliminate friction in AI-assisted development workflows.
-
-Zero traditional coding background—systematic methodology over credentials.
+[@duke-of-beans](https://github.com/duke-of-beans)
 
 ---
 

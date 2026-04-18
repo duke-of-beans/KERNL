@@ -1,0 +1,24 @@
+node_modules/
+dist/
+*.js.map
+*.d.ts
+!src/**/*.d.ts
+.DS_Store
+
+# Runtime data
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Session artifacts
+PROJECT_DNA.json
+PROJECT_STATE.json
+STATUS.md
+_mcp-health-report.json
+MORNING_BRIEFING.md
+commit-msg.txt
+SESSION_SUMMARY.md
+CONTINUATION_PROMPT*.md
+IMPLEMENTATION_HANDOFF.md
+BACKLOG.md
+DEVELOPMENT_JOURNEY.md

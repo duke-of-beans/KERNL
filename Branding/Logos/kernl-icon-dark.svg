@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="KERNL icon">
+  <!-- Uses #FFFFFF so it can be dropped into light/dark UIs without edits -->
+  <g fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <!-- "Ring-0" halo (a subtle notch) -->
+    <circle cx="50" cy="50" r="42" stroke-dasharray="246 18" stroke-dashoffset="32"/>
+    <!-- K monogram -->
+    <path d="M34 26V74"/>
+    <path d="M34 50L68 28"/>
+    <path d="M34 50L68 72"/>
+  </g>
+  <!-- Core / kernel -->
+  <circle cx="50" cy="50" r="4.5" fill="#FFFFFF"/>
+</svg>

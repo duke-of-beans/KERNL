@@ -23,9 +23,22 @@ export declare class ProjectDatabase {
     deleteSession(sessionId: string): boolean;
     saveCheckpoint(checkpoint: Omit<Checkpoint, 'id' | 'createdAt'>): Checkpoint;
     getLatestCheckpoint(projectId: string): Checkpoint | null;
-    indexFile(projectId: string, path: string, fileType: string | null, size: number, contentHash: string, contentPreview: string, embedding: Buffer | null, metadata?: Record<string, unknown>): number;
+    /**
+     * Index a file with optional embedding
+     * Supports both positional and options-based calling
+     */
+    indexFile(projectId: string, path: string, fileTypeOrOptions?: string | null | {
+        file_type?: string | null;
+        size?: number;
+        content_hash?: string;
+        content_preview?: string;
+        embedding?: Buffer | null;
+        metadata?: Record<string, unknown>;
+    }, size?: number, contentHash?: string, contentPreview?: string, embedding?: Buffer | null, metadata?: Record<string, unknown>): number;
     getFileIndex(projectId: string, path: string): FileIndexRow | null;
+    getIndexedFile(projectId: string, path: string): FileIndexRow | null;
     getProjectFiles(projectId: string): FileIndexRow[];
+    getIndexedFiles(projectId: string): FileIndexRow[];
     searchFilesByEmbedding(projectId: string, queryEmbedding: Buffer, limit?: number): Array<FileIndexRow & {
         score: number;
     }>;
@@ -36,6 +49,17 @@ export declare class ProjectDatabase {
     getPendingShadowDocs(projectId: string): ShadowDoc[];
     applyShadowDoc(id: number): boolean;
     cancelShadowDoc(id: number): boolean;
+    createPattern(pattern: {
+        projectId: string;
+        name: string;
+        problem: string;
+        solution: string;
+        implementation: string | null;
+        metrics: Record<string, unknown> | null;
+        problemEmbedding: Buffer | null;
+    }): number;
+    getPattern(id: number): PatternData | null;
+    getPatterns(projectId?: string): PatternData[];
     logActivity(action: string, details?: Record<string, unknown>, projectId?: string, sessionId?: string): void;
     close(): void;
 }
@@ -50,6 +74,17 @@ interface FileIndexRow {
     embedding: Buffer | null;
     metadata: string;
     indexed_at: string;
+}
+interface PatternData {
+    id: number;
+    projectId: string;
+    name: string;
+    problem: string;
+    solution: string;
+    implementation?: string;
+    metrics?: Record<string, unknown>;
+    problemEmbedding?: Buffer;
+    createdAt: string;
 }
 export {};
 //# sourceMappingURL=database.d.ts.map

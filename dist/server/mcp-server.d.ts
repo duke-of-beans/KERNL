@@ -1,6 +1,6 @@
 /**
  * KERNL MCP Server
- * Version: 5.0.1
+ * Version: 5.1.0
  *
  * The core MCP server that exposes all tools to Claude.
  */

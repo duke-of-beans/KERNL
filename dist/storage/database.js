@@ -233,7 +233,36 @@ export class ProjectDatabase {
     // ==========================================================================
     // FILE INDEX OPERATIONS
     // ==========================================================================
-    indexFile(projectId, path, fileType, size, contentHash, contentPreview, embedding, metadata = {}) {
+    /**
+     * Index a file with optional embedding
+     * Supports both positional and options-based calling
+     */
+    indexFile(projectId, path, fileTypeOrOptions, size, contentHash, contentPreview, embedding, metadata = {}) {
+        // Handle options object
+        let fileType = null;
+        let finalSize = 0;
+        let finalContentHash = '';
+        let finalContentPreview = '';
+        let finalEmbedding = null;
+        let finalMetadata = {};
+        if (typeof fileTypeOrOptions === 'object' && fileTypeOrOptions !== null) {
+            // Options-based call
+            fileType = fileTypeOrOptions.file_type ?? null;
+            finalSize = fileTypeOrOptions.size ?? 0;
+            finalContentHash = fileTypeOrOptions.content_hash ?? '';
+            finalContentPreview = fileTypeOrOptions.content_preview ?? '';
+            finalEmbedding = fileTypeOrOptions.embedding ?? null;
+            finalMetadata = fileTypeOrOptions.metadata ?? {};
+        }
+        else {
+            // Positional call
+            fileType = fileTypeOrOptions ?? null;
+            finalSize = size ?? 0;
+            finalContentHash = contentHash ?? '';
+            finalContentPreview = contentPreview ?? '';
+            finalEmbedding = embedding ?? null;
+            finalMetadata = metadata;
+        }
         const stmt = this.db.prepare(`
       INSERT INTO file_index (project_id, path, file_type, size, content_hash, content_preview, embedding, metadata, indexed_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -246,16 +275,24 @@ export class ProjectDatabase {
         metadata = excluded.metadata,
         indexed_at = excluded.indexed_at
     `);
-        const result = stmt.run(projectId, path, fileType, size, contentHash, contentPreview, embedding, JSON.stringify(metadata), new Date().toISOString());
+        const result = stmt.run(projectId, path, fileType, finalSize, finalContentHash, finalContentPreview, finalEmbedding, JSON.stringify(finalMetadata), new Date().toISOString());
         return result.lastInsertRowid;
     }
     getFileIndex(projectId, path) {
         const stmt = this.db.prepare(`SELECT * FROM file_index WHERE project_id = ? AND path = ?`);
         return stmt.get(projectId, path) ?? null;
     }
+    // Alias for semantic search compatibility
+    getIndexedFile(projectId, path) {
+        return this.getFileIndex(projectId, path);
+    }
     getProjectFiles(projectId) {
         const stmt = this.db.prepare(`SELECT * FROM file_index WHERE project_id = ?`);
         return stmt.all(projectId);
+    }
+    // Alias for semantic search compatibility
+    getIndexedFiles(projectId) {
+        return this.getProjectFiles(projectId);
     }
     searchFilesByEmbedding(projectId, queryEmbedding, limit = 10) {
         // SQLite doesn't have native vector similarity, so we fetch all and compute in JS
@@ -355,13 +392,14 @@ export class ProjectDatabase {
     createShadowDoc(doc) {
         const now = new Date().toISOString();
         const stmt = this.db.prepare(`
-      INSERT INTO shadow_docs (project_id, file_path, content, commit_with, status, created_at)
-      VALUES (?, ?, ?, ?, 'pending', ?)
+      INSERT INTO shadow_docs (project_id, file_path, content, mode, commit_with, status, created_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', ?)
     `);
-        const result = stmt.run(doc.projectId, doc.filePath, doc.content, doc.commitWith || 'next_code_commit', now);
+        const result = stmt.run(doc.projectId, doc.filePath, doc.content, doc.mode || 'append', doc.commitWith || 'next_code_commit', now);
         return {
             ...doc,
             id: result.lastInsertRowid,
+            mode: doc.mode || 'append',
             status: 'pending',
             commitWith: doc.commitWith || 'next_code_commit',
             createdAt: now,
@@ -379,6 +417,7 @@ export class ProjectDatabase {
             projectId: row.project_id,
             filePath: row.file_path,
             content: row.content,
+            mode: row.mode,
             commitWith: row.commit_with,
             status: row.status,
             createdAt: row.created_at,
@@ -399,6 +438,57 @@ export class ProjectDatabase {
     `);
         const result = stmt.run(id);
         return result.changes > 0;
+    }
+    // ==========================================================================
+    // PATTERN OPERATIONS
+    // ==========================================================================
+    createPattern(pattern) {
+        const now = new Date().toISOString();
+        const stmt = this.db.prepare(`
+      INSERT INTO patterns (project_id, name, problem, solution, implementation, metrics, problem_embedding, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+        const result = stmt.run(pattern.projectId, pattern.name, pattern.problem, pattern.solution, pattern.implementation, pattern.metrics ? JSON.stringify(pattern.metrics) : null, pattern.problemEmbedding, now);
+        return result.lastInsertRowid;
+    }
+    getPattern(id) {
+        const stmt = this.db.prepare(`SELECT * FROM patterns WHERE id = ?`);
+        const row = stmt.get(id);
+        if (!row)
+            return null;
+        return {
+            id: row.id,
+            projectId: row.project_id,
+            name: row.name,
+            problem: row.problem,
+            solution: row.solution,
+            implementation: row.implementation || undefined,
+            metrics: row.metrics ? JSON.parse(row.metrics) : undefined,
+            problemEmbedding: row.problem_embedding || undefined,
+            createdAt: row.created_at,
+        };
+    }
+    getPatterns(projectId) {
+        let query = `SELECT * FROM patterns`;
+        const params = [];
+        if (projectId) {
+            query += ` WHERE project_id = ?`;
+            params.push(projectId);
+        }
+        query += ` ORDER BY created_at DESC`;
+        const stmt = this.db.prepare(query);
+        const rows = (params.length > 0 ? stmt.all(...params) : stmt.all());
+        return rows.map(row => ({
+            id: row.id,
+            projectId: row.project_id,
+            name: row.name,
+            problem: row.problem,
+            solution: row.solution,
+            implementation: row.implementation || undefined,
+            metrics: row.metrics ? JSON.parse(row.metrics) : undefined,
+            problemEmbedding: row.problem_embedding || undefined,
+            createdAt: row.created_at,
+        }));
     }
     // ==========================================================================
     // ACTIVITY LOG

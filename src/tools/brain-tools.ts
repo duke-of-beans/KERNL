@@ -1,12 +1,8 @@
 /**
- * brain-tools.ts — KERNL-BRAIN-01
+ * brain-tools.ts — KERNL-BRAIN-01 + KERNL-BRAIN-02
  *
- * Live brain.db tools for KERNL MCP.
- * Exposes: brain_briefing, brain_recall, brain_recall_graph, brain_remember, brain_status
- *
- * Reads D:\Meta\brain.db directly via better-sqlite3.
- * Vector search via Ollama (nomic-embed-text) — degrades to BM25-only if unavailable.
- * Graph expansion via brain_edges — degrades gracefully if table missing.
+ * v2: nomic task-specific prefixes (search_query: / search_document:)
+ *     brain_feedback tool — recall quality reinforcement loop
  */
 
 import { createRequire } from 'node:module';
@@ -26,8 +22,6 @@ const OLLAMA_HOST    = 'http://localhost:11434';
 const EMBED_MODEL    = 'nomic-embed-text';
 const CHAR_CAP       = 3200;
 
-// ── Minimal DB types (avoids better-sqlite3 export= ESM conflicts) ───────────
-
 interface PreparedStmt {
   all(...args: unknown[]): unknown[];
   get(...args: unknown[]): unknown | undefined;
@@ -38,8 +32,6 @@ interface BrainDB {
   prepare(sql: string): PreparedStmt;
   close(): void;
 }
-
-// ── DB singleton ──────────────────────────────────────────────────────────────
 
 let _db: BrainDB | null = null;
 let _vecLoaded = false;
@@ -52,7 +44,6 @@ function getBrainDb(): BrainDB | null {
     _db = new Database(BRAIN_DB_PATH, { readonly: false });
     _db.pragma('journal_mode = WAL');
     _db.pragma('foreign_keys = OFF');
-
     if (!_vecLoaded) {
       try {
         const sqliteVec = _require(
@@ -60,7 +51,7 @@ function getBrainDb(): BrainDB | null {
         ) as { load: (db: BrainDB) => void };
         sqliteVec.load(_db);
         _vecLoaded = true;
-      } catch { /* BM25-only — fine */ }
+      } catch { /* BM25-only */ }
     }
     return _db;
   } catch (e) {
@@ -68,9 +59,6 @@ function getBrainDb(): BrainDB | null {
     return null;
   }
 }
-
-
-// ── ULID ─────────────────────────────────────────────────────────────────────
 
 const ENC = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 function ulid(): string {
@@ -81,8 +69,6 @@ function ulid(): string {
   for (let i = 0; i < 16; i++) str += ENC[Math.floor(Math.random() * 32)] ?? '0';
   return str;
 }
-
-// ── Embedding via Ollama ──────────────────────────────────────────────────────
 
 function generateEmbedding(text: string): Promise<Float32Array> {
   return new Promise((resolve, reject) => {
@@ -109,8 +95,6 @@ function generateEmbedding(text: string): Promise<Float32Array> {
   });
 }
 
-// ── Score normalization ───────────────────────────────────────────────────────
-
 function normalizeScores(scores: Map<string, number>): Map<string, number> {
   if (scores.size === 0) return scores;
   const vals = Array.from(scores.values());
@@ -124,18 +108,15 @@ function normalizeScores(scores: Map<string, number>): Map<string, number> {
   return result;
 }
 
-
-// ── Tool Definitions ──────────────────────────────────────────────────────────
-
 export const brainTools: Tool[] = [
   {
     name: 'brain_briefing',
     description: 'Live portfolio delta from brain.db — P0 items, changed signals, recent observations, open gaps. Call at session start for live context.',
-    inputSchema: { type: 'object', properties: { since: { type: 'string', description: 'ISO datetime to delta from (optional — defaults to last session end)' } } },
+    inputSchema: { type: 'object', properties: { since: { type: 'string', description: 'ISO datetime to delta from (optional)' } } },
   },
   {
     name: 'brain_recall',
-    description: 'Hybrid vector + BM25 search across all observations in brain.db. Finds relevant memories by meaning, not just keywords. Use for: "what do I know about X", "previous decisions on Y", "context for Z".',
+    description: 'Hybrid vector + BM25 search across all observations in brain.db. Finds relevant memories by meaning, not just keywords.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -148,7 +129,7 @@ export const brainTools: Tool[] = [
   },
   {
     name: 'brain_recall_graph',
-    description: 'Graph-enhanced recall. Seeds via hybrid search then walks brain_edges to surface observations from connected entities. Richer context — use when the topic touches multiple projects or when you want cross-project intelligence.',
+    description: 'Graph-enhanced recall. Seeds via hybrid search then walks brain_edges to surface observations from connected entities.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -161,12 +142,12 @@ export const brainTools: Tool[] = [
   },
   {
     name: 'brain_remember',
-    description: 'Write a new observation to brain.db. Use to capture decisions, discoveries, friction points, or anything worth persisting across sessions.',
+    description: 'Write a new observation to brain.db. Captures decisions, discoveries, friction points, anything worth persisting across sessions.',
     inputSchema: {
       type: 'object',
       properties: {
         content: { type: 'string', description: 'What to remember' },
-        entity: { type: 'string', description: 'Entity name to associate with (project, person, etc.)' },
+        entity: { type: 'string', description: 'Entity name to associate with' },
         source: { type: 'string', description: 'Source tag (default: session)' },
       },
       required: ['content'],
@@ -177,16 +158,24 @@ export const brainTools: Tool[] = [
     description: 'Get entity details + recent observations + latest signal for a named project or entity.',
     inputSchema: {
       type: 'object',
-      properties: {
-        project: { type: 'string', description: 'Project or entity name to look up' },
-      },
+      properties: { project: { type: 'string', description: 'Project or entity name to look up' } },
       required: ['project'],
     },
   },
+  {
+    name: 'brain_feedback',
+    description: 'Rate the usefulness of a recalled observation. Drives reinforcement learning — helpful/critical ratings strengthen graph paths, unhelpful weakens them. Call after brain_recall or brain_recall_graph when you can evaluate result quality.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        observation_id: { type: 'string', description: 'ID of the observation to rate (from brain_recall results)' },
+        rating: { type: 'string', enum: ['helpful', 'unhelpful', 'critical'], description: 'helpful=+0.15, unhelpful=-0.10, critical=+0.35 edge weight delta' },
+        context: { type: 'string', description: 'Optional: what query or task was this recall for' },
+      },
+      required: ['observation_id', 'rating'],
+    },
+  },
 ];
-
-
-// ── Handlers ──────────────────────────────────────────────────────────────────
 
 async function handleBriefing(input: { since?: string }): Promise<object> {
   const db = getBrainDb();
@@ -270,7 +259,8 @@ async function handleRecall(input: { query: string; scope?: string; limit?: numb
 
   if (_vecLoaded) {
     try {
-      const emb = await generateEmbedding(input.query);
+      // nomic task-specific prefix for retrieval queries
+      const emb = await generateEmbedding('search_query: ' + input.query);
       const queryJson = JSON.stringify(Array.from(emb));
       let sql = `SELECT o.id, o.content, o.entity_id, o.source, o.created_at,
         (1.0-(vec_distance_cosine(o.embedding,vec_f32(?))/2.0)) AS similarity
@@ -321,7 +311,6 @@ async function handleRecall(input: { query: string; scope?: string; limit?: numb
   final.forEach((r, i) => { r.rank = i + 1; });
   return { query: input.query, scope: _scope, results: final, total_candidates: allIds.size, vector_search: _vecLoaded };
 }
-
 
 async function handleRecallGraph(input: { query: string; scope?: string; limit?: number }): Promise<object> {
   const db = getBrainDb();
@@ -374,14 +363,15 @@ async function handleRemember(input: { content: string; entity?: string; source?
       if (ent) { entityId = ent.id; entityResolved = ent.name; }
     }
 
-    db.prepare(`INSERT INTO observations (id,tenant_id,entity_id,content,source,tags,created_at)
-      VALUES (@id,@tenant_id,@entity_id,@content,@source,@tags,@now)`)
-      .run({ id, tenant_id: TENANT_ID, entity_id: entityId, content: input.content, source: _source, tags: '[]', now });
+    db.prepare(`INSERT INTO observations (id,tenant_id,entity_id,content,source,tags,created_at,created_by,status,embedding_version,synthesis_depth)
+      VALUES (@id,@tenant_id,@entity_id,@content,@source,'[]',@now,'brain_remember','active',1,0)`)
+      .run({ id, tenant_id: TENANT_ID, entity_id: entityId, content: input.content, source: _source, now });
 
     try {
-      const emb = await generateEmbedding(input.content);
+      // nomic task-specific prefix for document writes
+      const emb = await generateEmbedding('search_document: ' + input.content);
       db.prepare('UPDATE observations SET embedding=? WHERE id=?').run(Buffer.from(emb.buffer), id);
-    } catch { /* saved without embedding — fine */ }
+    } catch { /* saved without embedding */ }
 
     return { observation_id: id, entity_resolved: entityResolved, source: _source, created_at: now };
   } catch (e) {
@@ -434,7 +424,51 @@ function handleStatus(input: { project: string }): object {
   }
 }
 
-// ── Handler factory ───────────────────────────────────────────────────────────
+async function handleFeedback(input: { observation_id: string; rating: 'helpful' | 'unhelpful' | 'critical'; context?: string }): Promise<object> {
+  const db = getBrainDb();
+  if (!db) return { error: 'brain.db unavailable' };
+  try {
+    // Ensure feedback_log table exists
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS feedback_log (
+        id TEXT PRIMARY KEY,
+        observation_id TEXT NOT NULL,
+        rating TEXT NOT NULL CHECK(rating IN ('helpful','unhelpful','critical')),
+        weight_delta REAL NOT NULL,
+        context TEXT,
+        created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+      )
+    `).run();
+
+    const weightDelta = input.rating === 'helpful' ? 0.15 : input.rating === 'unhelpful' ? -0.10 : 0.35;
+    const id = ulid();
+    const nowStr = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+    db.prepare(
+      'INSERT INTO feedback_log(id,observation_id,rating,weight_delta,context,created_at) VALUES(?,?,?,?,?,?)'
+    ).run(id, input.observation_id, input.rating, weightDelta, input.context ?? null, nowStr);
+
+    // Strengthen/weaken edges connected to this observation's entity
+    const obs = db.prepare('SELECT entity_id FROM observations WHERE id=?').get(input.observation_id) as { entity_id: string | null } | null;
+    let edgesUpdated = 0;
+    if (obs?.entity_id) {
+      const result = db.prepare(
+        'UPDATE brain_edges SET weight=MAX(0.0,MIN(1.0,weight+?)),updated_at=? WHERE source_entity_id=? OR target_entity_id=?'
+      ).run(weightDelta, nowStr, obs.entity_id, obs.entity_id);
+      edgesUpdated = result.changes;
+    }
+
+    return {
+      feedback_id: id,
+      observation_id: input.observation_id,
+      rating: input.rating,
+      weight_delta: weightDelta,
+      edges_updated: edgesUpdated,
+    };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+}
 
 export function createBrainHandlers(): Record<string, (input: Record<string, unknown>) => Promise<unknown>> {
   return {
@@ -443,5 +477,6 @@ export function createBrainHandlers(): Record<string, (input: Record<string, unk
     brain_recall_graph:  (i) => handleRecallGraph(i as { query: string; scope?: string; limit?: number }),
     brain_remember:      (i) => handleRemember(i as { content: string; entity?: string; source?: string }),
     brain_status:        (i) => Promise.resolve(handleStatus(i as { project: string })),
+    brain_feedback:      (i) => handleFeedback(i as { observation_id: string; rating: 'helpful'|'unhelpful'|'critical'; context?: string }),
   };
 }

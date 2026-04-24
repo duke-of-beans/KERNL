@@ -207,6 +207,7 @@ export interface ShadowDoc {
     projectId: string;
     filePath: string;
     content: string;
+    mode: 'rewrite' | 'append';
     commitWith: string;
     status: 'pending' | 'applied' | 'cancelled';
     createdAt: string;
@@ -341,6 +342,7 @@ export interface ShadowDocUpdateInput {
     project: string;
     file: string;
     content: string;
+    mode?: 'rewrite' | 'append';
     commitWith?: string;
 }
 //# sourceMappingURL=index.d.ts.map

@@ -1,6 +1,6 @@
 /**
  * KERNL MCP Server
- * Version: 5.0.1
+ * Version: 5.1.0
  * 
  * The core MCP server that exposes all tools to Claude.
  */
@@ -38,6 +38,8 @@ import { testingTools, createTestingHandlers } from '../tools/testing-tools.js';
 // Phase 7: Utilities and Research
 import { utilityTools, createUtilityHandlers } from '../tools/utility-tools.js';
 import { researchTools, createResearchHandlers } from '../tools/research-tools.js';
+// Phase 8: Brain Intelligence (brain.db live context + graph recall)
+import { brainTools, createBrainHandlers } from '../tools/brain-tools.js';
 
 export class KernlMCPServer {
   private server: Server;
@@ -56,15 +58,8 @@ export class KernlMCPServer {
     this.handlers = new Map();
 
     this.server = new Server(
-      {
-        name: 'kernl-mcp',
-        version: '5.0.1',
-      },
-      {
-        capabilities: {
-          tools: {},
-        },
-      }
+      { name: 'kernl-mcp', version: '5.1.0' },
+      { capabilities: { tools: {} } }
     );
 
     this.registerAllTools();
@@ -73,246 +68,85 @@ export class KernlMCPServer {
   }
 
   private registerAllTools(): void {
-    // State Management Tools
-    const stateHandlers = createStateManagementHandlers(this.db);
-    for (const tool of stateManagementTools) {
-      this.tools.set(tool.name, tool);
-      const handler = stateHandlers[tool.name as keyof typeof stateHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
+    const register = (tools: Tool[], handlers: Record<string, (input: unknown) => Promise<unknown>>) => {
+      for (const tool of tools) {
+        this.tools.set(tool.name, tool);
+        const h = handlers[tool.name];
+        if (h) this.handlers.set(tool.name, h);
       }
-    }
+    };
 
-    // Project Operations Tools  
-    const projectHandlers = createProjectOperationsHandlers(this.db);
-    for (const tool of projectOperationsTools) {
-      this.tools.set(tool.name, tool);
-      const handler = projectHandlers[tool.name as keyof typeof projectHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
+    register(stateManagementTools,  createStateManagementHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
+    register(projectOperationsTools, createProjectOperationsHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
+    register(fileOperationsTools,    createFileOperationsHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
+    register(semanticSearchTools,    createSemanticSearchHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
+    register(patternRecognitionTools,createPatternRecognitionHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
+    register(parallelGatesTools,     createParallelGatesHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
+    register(processManagementTools, createProcessManagementHandlers() as Record<string, (input: unknown) => Promise<unknown>>);
+    register(streamingSearchTools,   createStreamingSearchHandlers() as Record<string, (input: unknown) => Promise<unknown>>);
+    register(systemFileTools,        createSystemFileHandlers() as Record<string, (input: unknown) => Promise<unknown>>);
+    register(configMetaTools,        createConfigMetaHandlers(Array.from(this.tools.values())) as Record<string, (input: unknown) => Promise<unknown>>);
+    register(chromeTools,            createChromeHandlers() as Record<string, (input: unknown) => Promise<unknown>>);
+    register(shadowDocTools,         createShadowDocHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
+    register(gitTools,               createGitHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
+    register(backlogTools,           createBacklogHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
+    register(testingTools,           createTestingHandlers(Array.from(this.tools.values())) as Record<string, (input: unknown) => Promise<unknown>>);
+    register(utilityTools,           createUtilityHandlers() as Record<string, (input: unknown) => Promise<unknown>>);
+    register(researchTools,          createResearchHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
 
-    // File Operations Tools
-    const fileHandlers = createFileOperationsHandlers(this.db);
-    for (const tool of fileOperationsTools) {
-      this.tools.set(tool.name, tool);
-      const handler = fileHandlers[tool.name as keyof typeof fileHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 2: Semantic Search Tools
-    const semanticHandlers = createSemanticSearchHandlers(this.db);
-    for (const tool of semanticSearchTools) {
-      this.tools.set(tool.name, tool);
-      const handler = semanticHandlers[tool.name as keyof typeof semanticHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 2: Pattern Recognition Tools
-    const patternHandlers = createPatternRecognitionHandlers(this.db);
-    for (const tool of patternRecognitionTools) {
-      this.tools.set(tool.name, tool);
-      const handler = patternHandlers[tool.name as keyof typeof patternHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 2: Parallel Gates Tools
-    const gatesHandlers = createParallelGatesHandlers(this.db);
-    for (const tool of parallelGatesTools) {
-      this.tools.set(tool.name, tool);
-      const handler = gatesHandlers[tool.name as keyof typeof gatesHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 3: Process Management Tools
-    const processHandlers = createProcessManagementHandlers();
-    for (const tool of processManagementTools) {
-      this.tools.set(tool.name, tool);
-      const handler = processHandlers[tool.name as keyof typeof processHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 3: Streaming Search Tools
-    const searchHandlers = createStreamingSearchHandlers();
-    for (const tool of streamingSearchTools) {
-      this.tools.set(tool.name, tool);
-      const handler = searchHandlers[tool.name as keyof typeof searchHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 3: System File Tools
-    const sysFileHandlers = createSystemFileHandlers();
-    for (const tool of systemFileTools) {
-      this.tools.set(tool.name, tool);
-      const handler = sysFileHandlers[tool.name as keyof typeof sysFileHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 3: Config & Meta Tools (pass all tools for sys_get_tool_info)
-    const configHandlers = createConfigMetaHandlers(Array.from(this.tools.values()));
-    for (const tool of configMetaTools) {
-      this.tools.set(tool.name, tool);
-      const handler = configHandlers[tool.name as keyof typeof configHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 4: Chrome Automation Tools
-    const chromeHandlers = createChromeHandlers();
-    for (const tool of chromeTools) {
-      this.tools.set(tool.name, tool);
-      const handler = chromeHandlers[tool.name as keyof typeof chromeHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 5: Shadow Documentation Tools
-    const shadowHandlers = createShadowDocHandlers(this.db);
-    for (const tool of shadowDocTools) {
-      this.tools.set(tool.name, tool);
-      const handler = shadowHandlers[tool.name as keyof typeof shadowHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 5: Git Tools
-    const gitHandlers = createGitHandlers(this.db);
-    for (const tool of gitTools) {
-      this.tools.set(tool.name, tool);
-      const handler = gitHandlers[tool.name as keyof typeof gitHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 6: Backlog Tools
-    const backlogHandlers = createBacklogHandlers(this.db);
-    for (const tool of backlogTools) {
-      this.tools.set(tool.name, tool);
-      const handler = backlogHandlers[tool.name as keyof typeof backlogHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 6: Testing Tools (pass all tools for validation)
-    const testHandlers = createTestingHandlers(Array.from(this.tools.values()));
-    for (const tool of testingTools) {
-      this.tools.set(tool.name, tool);
-      const handler = testHandlers[tool.name as keyof typeof testHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 7: Utility Tools
-    const utilHandlers = createUtilityHandlers();
-    for (const tool of utilityTools) {
-      this.tools.set(tool.name, tool);
-      const handler = utilHandlers[tool.name as keyof typeof utilHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
-
-    // Phase 7: Research Tools
-    const researchHandlers = createResearchHandlers(this.db);
-    for (const tool of researchTools) {
-      this.tools.set(tool.name, tool);
-      const handler = researchHandlers[tool.name as keyof typeof researchHandlers];
-      if (handler) {
-        this.handlers.set(tool.name, handler as (input: unknown) => Promise<unknown>);
-      }
-    }
+    // Phase 8: Brain Intelligence
+    register(brainTools, createBrainHandlers() as Record<string, (input: unknown) => Promise<unknown>>);
 
     // Version tool
-    const versionTool: Tool = {
+    this.tools.set('kernl_version', {
       name: 'kernl_version',
       description: 'Get KERNL version and status information',
       inputSchema: { type: 'object', properties: {} },
-    };
-    this.tools.set(versionTool.name, versionTool);
+    });
     this.handlers.set('kernl_version', async () => ({
-      name: 'KERNL',
-      version: '5.0.1',
-      description: 'The Core Intelligence Layer for AI Systems',
-      status: 'rebuilding',
+      name: 'KERNL', version: '5.1.0',
+      description: 'The Core Intelligence Layer for AI Systems — now with brain.db intelligence',
       toolCount: this.tools.size,
-      categories: ['Session', 'Project', 'Filesystem', 'Intelligence', 'Patterns', 'Gates', 'Process', 'Search', 'Files', 'Config', 'Chrome', 'ShadowDocs', 'Git', 'Backlog', 'Testing', 'Utility', 'Research']
+      categories: ['Session','Project','Filesystem','Intelligence','Patterns','Gates',
+                   'Process','Search','Files','Config','Chrome','ShadowDocs','Git',
+                   'Backlog','Testing','Utility','Research','Brain'],
     }));
 
-    console.error(`[KERNL] Registered ${this.tools.size} tools`);
+    console.error(`[KERNL] Registered ${this.tools.size} tools (v5.1.0 — Brain layer active)`);
   }
 
   private setupRequestHandlers(): void {
-    // List all available tools
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
-      return {
-        tools: Array.from(this.tools.values()),
-      };
-    });
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: Array.from(this.tools.values()),
+    }));
 
-    // Handle tool calls
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
-
       const handler = this.handlers.get(name);
-      if (!handler) {
-        return {
-          content: [{ type: 'text', text: JSON.stringify({ error: `Unknown tool: ${name}` }) }],
-          isError: true,
-        };
-      }
-
+      if (!handler) return {
+        content: [{ type: 'text', text: JSON.stringify({ error: `Unknown tool: ${name}` }) }],
+        isError: true,
+      };
       try {
         const result = await handler(args ?? {});
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        };
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        console.error(`[KERNL] Error in ${name}:`, errorMessage);
-        return {
-          content: [{ type: 'text', text: JSON.stringify({ error: errorMessage }) }],
-          isError: true,
-        };
+        const msg = error instanceof Error ? error.message : 'Unknown error';
+        console.error(`[KERNL] Error in ${name}:`, msg);
+        return { content: [{ type: 'text', text: JSON.stringify({ error: msg }) }], isError: true };
       }
     });
   }
 
   private setupErrorHandling(): void {
-    this.server.onerror = (error) => {
-      console.error('[KERNL] Server error:', error);
-    };
-
-    process.on('SIGINT', () => {
-      this.shutdown();
-      process.exit(0);
-    });
+    this.server.onerror = (error) => console.error('[KERNL] Server error:', error);
+    process.on('SIGINT', () => { this.shutdown(); process.exit(0); });
   }
 
   async run(): Promise<void> {
     const transport = new StdioServerTransport();
-    console.error('[KERNL] Starting server v5.0.1...');
-    console.error('[KERNL] The Core Intelligence Layer for AI Systems');
+    console.error('[KERNL] Starting server v5.1.0...');
+    console.error('[KERNL] Brain intelligence layer active — brain.db connected');
     await this.server.connect(transport);
     console.error('[KERNL] Server running. Waiting for requests...');
   }

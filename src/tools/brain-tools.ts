@@ -1,8 +1,8 @@
 /**
  * brain-tools.ts — KERNL-BRAIN-01 + KERNL-BRAIN-02
  *
- * v2: nomic task-specific prefixes (search_query: / search_document:)
- *     brain_feedback tool — recall quality reinforcement loop
+ * v2.1: FTS keyword matching (not phrase quoting), nomic task-specific prefixes,
+ *       brain_feedback reinforcement loop
  */
 
 import { createRequire } from 'node:module';
@@ -108,6 +108,18 @@ function normalizeScores(scores: Map<string, number>): Map<string, number> {
   return result;
 }
 
+/** Build FTS5 keyword query — split into tokens with prefix wildcard, OR logic */
+function buildFtsQuery(query: string): string {
+  const STOP = new Set(['the','and','for','with','that','this','from','about','what','how','why','when','where','who','are','was','did','does']);
+  const tokens = query
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !STOP.has(w))
+    .map(w => w + '*');
+  return tokens.length > 0 ? tokens.join(' ') : query.replace(/"/g, '');
+}
+
 export const brainTools: Tool[] = [
   {
     name: 'brain_briefing',
@@ -164,13 +176,13 @@ export const brainTools: Tool[] = [
   },
   {
     name: 'brain_feedback',
-    description: 'Rate the usefulness of a recalled observation. Drives reinforcement learning — helpful/critical ratings strengthen graph paths, unhelpful weakens them. Call after brain_recall or brain_recall_graph when you can evaluate result quality.',
+    description: 'Rate the usefulness of a recalled observation. Drives reinforcement — helpful/critical ratings strengthen graph paths, unhelpful weakens them.',
     inputSchema: {
       type: 'object',
       properties: {
         observation_id: { type: 'string', description: 'ID of the observation to rate (from brain_recall results)' },
         rating: { type: 'string', enum: ['helpful', 'unhelpful', 'critical'], description: 'helpful=+0.15, unhelpful=-0.10, critical=+0.35 edge weight delta' },
-        context: { type: 'string', description: 'Optional: what query or task was this recall for' },
+        context: { type: 'string', description: 'Optional: what query or task this recall was for' },
       },
       required: ['observation_id', 'rating'],
     },
@@ -277,7 +289,8 @@ async function handleRecall(input: { query: string; scope?: string; limit?: numb
   }
 
   try {
-    const ftsQuery = '"' + input.query.replace(/"/g, '""') + '"';
+    // Keyword OR matching with prefix wildcard — NOT phrase quoting
+    const ftsQuery = buildFtsQuery(input.query);
     bm25Rows = db.prepare(`
       SELECT o.id, (-fts.rank) AS bm25_raw FROM observations o
       JOIN observations_fts fts ON o.rowid=fts.rowid
@@ -428,7 +441,6 @@ async function handleFeedback(input: { observation_id: string; rating: 'helpful'
   const db = getBrainDb();
   if (!db) return { error: 'brain.db unavailable' };
   try {
-    // Ensure feedback_log table exists
     db.prepare(`
       CREATE TABLE IF NOT EXISTS feedback_log (
         id TEXT PRIMARY KEY,
@@ -448,7 +460,6 @@ async function handleFeedback(input: { observation_id: string; rating: 'helpful'
       'INSERT INTO feedback_log(id,observation_id,rating,weight_delta,context,created_at) VALUES(?,?,?,?,?,?)'
     ).run(id, input.observation_id, input.rating, weightDelta, input.context ?? null, nowStr);
 
-    // Strengthen/weaken edges connected to this observation's entity
     const obs = db.prepare('SELECT entity_id FROM observations WHERE id=?').get(input.observation_id) as { entity_id: string | null } | null;
     let edgesUpdated = 0;
     if (obs?.entity_id) {
@@ -458,13 +469,7 @@ async function handleFeedback(input: { observation_id: string; rating: 'helpful'
       edgesUpdated = result.changes;
     }
 
-    return {
-      feedback_id: id,
-      observation_id: input.observation_id,
-      rating: input.rating,
-      weight_delta: weightDelta,
-      edges_updated: edgesUpdated,
-    };
+    return { feedback_id: id, observation_id: input.observation_id, rating: input.rating, weight_delta: weightDelta, edges_updated: edgesUpdated };
   } catch (e) {
     return { error: (e as Error).message };
   }

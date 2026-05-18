@@ -1,12 +1,21 @@
 /**
  * brain-tools.ts — KERNL-BRAIN-01 + KERNL-BRAIN-02
  *
+ * v3.0: COGNITIVE-ORGANISM-PHASE-1 fortification
+ *       RRF hybrid retrieval (replaces weighted average)
+ *       Retrieval tracking (last_accessed_at, access_count) for ACT-R decay
+ *       SHA-256 dedup on brain_remember
+ *       Status-aware queries (skip archived observations)
+ *
  * v2.2: FTS5 explicit OR between keyword tokens (FTS5 default is AND, not OR)
  *       nomic task-specific prefixes, brain_feedback reinforcement loop
  */
 
 import { createRequire } from 'node:module';
 import http from 'node:http';
+import https from 'node:https';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import {
   getNeighborEntities,
@@ -21,6 +30,35 @@ const TENANT_ID      = 'dk-001';
 const OLLAMA_HOST    = 'http://localhost:11434';
 const EMBED_MODEL    = 'nomic-embed-text';
 const CHAR_CAP       = 3200;
+const CALIBRATION_PATH = 'D:\\Projects\\treg-mcp\\calibration\\reference_cases.json';
+
+// Anthropic API for WHETSTONE + IMPRINT
+let _apiKey = '';
+try { const env = fs.readFileSync('D:\\Meta\\.env', 'utf8'); const m = env.match(/ANTHROPIC_API_KEY=(.+)/); if (m) _apiKey = m[1].trim(); } catch { /**/ }
+
+function callClaudeAPI(prompt: string, systemPrompt: string, maxTokens = 1024): Promise<string | null> {
+  if (!_apiKey) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const body = JSON.stringify({
+      model: 'claude-sonnet-4-20250514', max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: prompt }]
+    });
+    const req = https.request({
+      hostname: 'api.anthropic.com', port: 443, path: '/v1/messages', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': _apiKey, 'anthropic-version': '2023-06-01', 'Content-Length': Buffer.byteLength(body).toString() }
+    }, (res) => {
+      let raw = '';
+      res.on('data', (c: Buffer) => raw += c);
+      res.on('end', () => {
+        try { const d = JSON.parse(raw); resolve(d.content?.[0]?.text ?? null); } catch { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(60000, () => { req.destroy(); resolve(null); });
+    req.write(body); req.end();
+  });
+}
 
 interface PreparedStmt {
   all(...args: unknown[]): unknown[];
@@ -182,6 +220,32 @@ export const brainTools: Tool[] = [
       required: ['observation_id', 'rating'],
     },
   },
+  {
+    name: 'whetstone_challenge',
+    description: 'WHETSTONE adversarial engine. Takes a conclusion or position and generates the strongest possible counterargument using heterogeneous challenge. Tests ALL conclusions — alternative and orthodox alike. Returns structured opposition. Uses Anthropic API.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        position: { type: 'string', description: 'The conclusion, claim, or position to challenge' },
+        context: { type: 'string', description: 'Optional context about how the position was reached' },
+        calibration: { type: 'boolean', description: 'If true, also check against TREG calibration dataset' },
+      },
+      required: ['position'],
+    },
+  },
+  {
+    name: 'imprint_reflect',
+    description: 'IMPRINT reflection engine. Generates post-session self-evaluation with typed deltas. Analyzes what worked, what failed, what should change. Proposes ΔK = (ΔS, ΔU, ΔT) over system prompt, user model, tool config.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_summary: { type: 'string', description: 'Summary of what happened this session' },
+        outcomes: { type: 'string', description: 'What worked and what did not' },
+        corrections: { type: 'string', description: 'Any corrections David made to Claude output' },
+      },
+      required: ['session_summary'],
+    },
+  },
 ];
 
 async function handleBriefing(input: { since?: string }): Promise<object> {
@@ -227,6 +291,11 @@ async function handleRecall(input: { query: string; scope?: string; limit?: numb
   else if (_scope.startsWith('era:')) { scopeType = 'era'; scopeValue = _scope.slice(4); }
   else if (_scope.startsWith('person:')) { scopeType = 'person'; scopeValue = _scope.slice(7); }
 
+  // --- RRF Hybrid Retrieval (v3.0) ---
+  // Reciprocal Rank Fusion: score(d) = Σ 1/(k + rank_i(d)), k=60
+  // Rank-based fusion is robust to score distribution differences between vector and BM25.
+  const RRF_K = 60;
+
   type VRow = { id: string; content: string; entity_id: string | null; source: string; created_at: string; similarity: number };
   let vectorRows: VRow[] = [];
   let bm25Rows: { id: string; bm25_raw: number }[] = [];
@@ -236,7 +305,7 @@ async function handleRecall(input: { query: string; scope?: string; limit?: numb
     try {
       const emb = await generateEmbedding('search_query: ' + input.query);
       const queryJson = JSON.stringify(Array.from(emb));
-      let sql = `SELECT o.id, o.content, o.entity_id, o.source, o.created_at, (1.0-(vec_distance_cosine(o.embedding,vec_f32(?))/2.0)) AS similarity FROM observations o WHERE o.tenant_id=? AND o.embedding IS NOT NULL`;
+      let sql = `SELECT o.id, o.content, o.entity_id, o.source, o.created_at, (1.0-(vec_distance_cosine(o.embedding,vec_f32(?))/2.0)) AS similarity FROM observations o WHERE o.tenant_id=? AND o.embedding IS NOT NULL AND o.status='active'`;
       const params: unknown[] = [queryJson, TENANT_ID];
       if (scopeType === 'project') { sql += ` AND o.entity_id=(SELECT id FROM entities WHERE tenant_id=? AND (slug=? OR name LIKE ?) LIMIT 1)`; params.push(TENANT_ID, scopeValue, `%${scopeValue}%`); }
       sql += ` ORDER BY similarity DESC LIMIT ?`; params.push(seedLimit);
@@ -247,24 +316,37 @@ async function handleRecall(input: { query: string; scope?: string; limit?: numb
 
   try {
     const ftsQuery = buildFtsQuery(input.query);
-    bm25Rows = db.prepare(`SELECT o.id, (-fts.rank) AS bm25_raw FROM observations o JOIN observations_fts fts ON o.rowid=fts.rowid WHERE o.tenant_id=? AND observations_fts MATCH ? ORDER BY fts.rank LIMIT ?`).all(TENANT_ID, ftsQuery, seedLimit) as { id: string; bm25_raw: number }[];
+    bm25Rows = db.prepare(`SELECT o.id, (-fts.rank) AS bm25_raw FROM observations o JOIN observations_fts fts ON o.rowid=fts.rowid WHERE o.tenant_id=? AND o.status='active' AND observations_fts MATCH ? ORDER BY fts.rank LIMIT ?`).all(TENANT_ID, ftsQuery, seedLimit) as { id: string; bm25_raw: number }[];
   } catch { /* ignore FTS error */ }
 
-  const vectorScores = new Map(vectorRows.map(r => [r.id, r.similarity]));
-  const bm25Scores = new Map(bm25Rows.map(r => [r.id, r.bm25_raw]));
-  const normV = normalizeScores(vectorScores); const normB = normalizeScores(bm25Scores);
-  const allIds = new Set([...vectorScores.keys(), ...bm25Scores.keys()]);
+  // Build rank maps (1-indexed: rank 1 = best)
+  const vectorRank = new Map<string, number>();
+  vectorRows.forEach((r, i) => vectorRank.set(r.id, i + 1));
+  const bm25Rank = new Map<string, number>();
+  bm25Rows.forEach((r, i) => bm25Rank.set(r.id, i + 1));
+
+  // RRF fusion
+  const allIds = new Set([...vectorRank.keys(), ...bm25Rank.keys()]);
   const results: { id: string; content: string; entity_id: string | null; entity_name: string | null; source: string; created_at: string; score: number; rank: number }[] = [];
   for (const id of allIds) {
-    const hybrid = 0.7 * (normV.get(id) ?? 0) + 0.3 * (normB.get(id) ?? 0);
+    const rrfScore = (vectorRank.has(id) ? 1 / (RRF_K + vectorRank.get(id)!) : 0)
+                   + (bm25Rank.has(id) ? 1 / (RRF_K + bm25Rank.get(id)!) : 0);
     let meta = vectorMeta.get(id);
-    if (!meta) { const row = db.prepare('SELECT id,content,entity_id,source,created_at FROM observations WHERE id=?').get(id) as VRow | null; if (!row) continue; meta = { ...row, similarity: 0 }; }
+    if (!meta) { const row = db.prepare("SELECT id,content,entity_id,source,created_at FROM observations WHERE id=? AND status='active'").get(id) as VRow | null; if (!row) continue; meta = { ...row, similarity: 0 }; }
     const ent = meta.entity_id ? (db.prepare('SELECT name FROM entities WHERE id=?').get(meta.entity_id) as { name: string } | null) : null;
-    results.push({ id, content: meta.content, entity_id: meta.entity_id, entity_name: ent?.name ?? null, source: meta.source, created_at: meta.created_at, score: parseFloat(hybrid.toFixed(6)), rank: 0 });
+    results.push({ id, content: meta.content, entity_id: meta.entity_id, entity_name: ent?.name ?? null, source: meta.source, created_at: meta.created_at, score: parseFloat(rrfScore.toFixed(6)), rank: 0 });
   }
   results.sort((a, b) => b.score - a.score);
   const final = results.slice(0, _limit);
   final.forEach((r, i) => { r.rank = i + 1; });
+
+  // --- Retrieval Tracking (ACT-R feed) ---
+  // Update last_accessed_at and access_count for returned observations
+  try {
+    const trackStmt = db.prepare("UPDATE observations SET last_accessed_at=datetime('now'), access_count=COALESCE(access_count,0)+1 WHERE id=?");
+    for (const r of final) { trackStmt.run(r.id); }
+  } catch { /* tracking is best-effort, don't fail recall */ }
+
   return { query: input.query, scope: _scope, results: final, total_candidates: allIds.size, vector_search: _vecLoaded };
 }
 
@@ -289,14 +371,27 @@ async function handleRemember(input: { content: string; entity?: string; source?
   const db = getBrainDb();
   if (!db) return { error: 'brain.db unavailable' };
   try {
-    const id = ulid(); const now = new Date().toISOString(); const _source = input.source ?? 'session';
+    const now = new Date().toISOString(); const _source = input.source ?? 'session';
+
+    // --- SHA-256 Dedup (v3.0) ---
+    // Compute content hash and check for recent duplicates (5 min window)
+    const contentHash = crypto.createHash('sha256').update(input.content).digest('hex');
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const existing = db.prepare(
+      "SELECT id FROM observations WHERE content_hash=? AND tenant_id=? AND created_at>? AND status='active' LIMIT 1"
+    ).get(contentHash, TENANT_ID, fiveMinAgo) as { id: string } | null;
+    if (existing) {
+      return { observation_id: existing.id, deduplicated: true, source: _source, created_at: now };
+    }
+
+    const id = ulid();
     let entityId: string | null = null, entityResolved: string | null = null;
     if (input.entity) {
       const ent = db.prepare('SELECT id,name FROM entities WHERE tenant_id=? AND (slug=? OR name LIKE ?) LIMIT 1').get(TENANT_ID, input.entity, `%${input.entity}%`) as { id: string; name: string } | null;
       if (ent) { entityId = ent.id; entityResolved = ent.name; }
     }
-    db.prepare(`INSERT INTO observations (id,tenant_id,entity_id,content,source,tags,created_at,created_by,status,embedding_version,synthesis_depth) VALUES (@id,@tenant_id,@entity_id,@content,@source,'[]',@now,'brain_remember','active',1,0)`)
-      .run({ id, tenant_id: TENANT_ID, entity_id: entityId, content: input.content, source: _source, now });
+    db.prepare(`INSERT INTO observations (id,tenant_id,entity_id,content,source,tags,content_hash,created_at,created_by,status,embedding_version,synthesis_depth) VALUES (@id,@tenant_id,@entity_id,@content,@source,'[]',@content_hash,@now,'brain_remember','active',1,0)`)
+      .run({ id, tenant_id: TENANT_ID, entity_id: entityId, content: input.content, source: _source, content_hash: contentHash, now });
     try {
       const emb = await generateEmbedding('search_document: ' + input.content);
       db.prepare('UPDATE observations SET embedding=? WHERE id=?').run(Buffer.from(emb.buffer), id);
@@ -342,6 +437,93 @@ async function handleFeedback(input: { observation_id: string; rating: 'helpful'
   } catch (e) { return { error: (e as Error).message }; }
 }
 
+async function handleWhetstone(input: { position: string; context?: string; calibration?: boolean }): Promise<object> {
+  if (!_apiKey) return { error: 'No Anthropic API key — WHETSTONE requires API access' };
+  const db = getBrainDb();
+
+  // Optional: load calibration cases for pattern matching
+  let calibrationContext = '';
+  if (input.calibration) {
+    try {
+      const raw = fs.readFileSync(CALIBRATION_PATH, 'utf8');
+      const dataset = JSON.parse(raw);
+      const cases = (dataset.cases as { name: string; pattern: string; signal_markers: string[] }[])
+        .map(c => `${c.name}: ${c.pattern} [${c.signal_markers.join(', ')}]`).join('\n');
+      calibrationContext = `\n\nCalibration reference cases:\n${cases}`;
+    } catch { /* no calibration available */ }
+  }
+
+  // Load relevant brain.db observations for context
+  let brainContext = '';
+  if (db) {
+    try {
+      const emb = await generateEmbedding('search_query: ' + input.position);
+      const queryJson = JSON.stringify(Array.from(emb));
+      const related = db.prepare(
+        `SELECT content FROM observations WHERE tenant_id=? AND status='active' AND embedding IS NOT NULL ORDER BY vec_distance_cosine(embedding, vec_f32(?)) LIMIT 3`
+      ).all(TENANT_ID, queryJson) as { content: string }[];
+      if (related.length > 0) {
+        brainContext = '\n\nRelated observations from memory:\n' + related.map(r => '- ' + r.content.slice(0, 200)).join('\n');
+      }
+    } catch { /* no vector search available */ }
+  }
+
+  const result = await callClaudeAPI(
+    `Position to challenge:\n"${input.position}"\n${input.context ? '\nContext: ' + input.context : ''}${calibrationContext}${brainContext}\n\nConstruct the STRONGEST possible counterargument. Think from a structurally different perspective — not just contrarily, but with different assumptions, framework, and priors. If this position has calibration pattern matches, note them.\n\nRespond with JSON: {"counterargument": "the strongest opposition", "framework": "what analytical framework the challenge uses", "calibration_match": "name of matching calibration case or null", "confidence": 0-100, "impasse": false, "impasse_reason": null}`,
+    'You are WHETSTONE — an adversarial cognitive engine. Your job is to sharpen positions through friction, not to agree or be polite. Construct heterogeneous challenges: think DIFFERENTLY, not just contrarily. If the position and counterargument reach genuine irreconcilable conflict, declare impasse. Test ALL conclusions — alternative and orthodox alike. Respond with JSON only, no markdown fences.',
+    768
+  );
+
+  if (!result) return { error: 'WHETSTONE API call failed' };
+  try {
+    const cleaned = result.replace(/```json|```/g, '').trim();
+    const challenge = JSON.parse(cleaned);
+    // Persist the challenge to brain.db
+    if (db) {
+      const obsId = ulid();
+      const content = `WHETSTONE challenge: "${input.position.slice(0, 100)}" → Counter: ${challenge.counterargument?.slice(0, 200) || '?'} [framework: ${challenge.framework || '?'}, confidence: ${challenge.confidence || '?'}]`;
+      db.prepare("INSERT INTO observations(id,tenant_id,content,source,tags,created_at,created_by,status,embedding_version,synthesis_depth) VALUES(?,?,?,'session','[\"whetstone\"]',datetime('now'),'whetstone','active',1,1)")
+        .run(obsId, TENANT_ID, content);
+    }
+    return challenge;
+  } catch { return { error: 'WHETSTONE parse error', raw: result.slice(0, 200) }; }
+}
+
+async function handleImprint(input: { session_summary: string; outcomes?: string; corrections?: string }): Promise<object> {
+  if (!_apiKey) return { error: 'No Anthropic API key — IMPRINT requires API access' };
+  const db = getBrainDb();
+
+  // Gather recent session observations for context
+  let recentObs = '';
+  if (db) {
+    const recent = db.prepare(
+      "SELECT content, created_at FROM observations WHERE tenant_id=? AND status='active' AND source='session' ORDER BY created_at DESC LIMIT 10"
+    ).all(TENANT_ID) as { content: string; created_at: string }[];
+    recentObs = recent.map(o => `[${o.created_at.slice(0, 10)}] ${o.content.slice(0, 150)}`).join('\n');
+  }
+
+  const result = await callClaudeAPI(
+    `Session summary: ${input.session_summary}\n${input.outcomes ? 'Outcomes: ' + input.outcomes : ''}\n${input.corrections ? 'Corrections David made: ' + input.corrections : ''}\n\nRecent observations:\n${recentObs}\n\nGenerate a post-session reflection with typed deltas:\n- ΔS: proposed changes to system prompt / bootstrap instructions\n- ΔU: updated understanding of David's preferences, patterns, working style\n- ΔT: proposed changes to tool configuration or workflow\n\nAlso identify: what worked well (reinforce), what failed (avoid), what patterns are emerging.\n\nRespond with JSON: {"deltas": {"system": ["delta1", ...], "user_model": ["delta1", ...], "tool_config": ["delta1", ...]}, "reinforce": ["pattern to keep"], "avoid": ["pattern to stop"], "emerging_patterns": ["pattern noticed"], "wound_healing": {"phase": "hemostasis|inflammation|proliferation|remodeling|none", "description": "if any belief was damaged, where in the healing cascade"}}`,
+    'You are IMPRINT — a reflection and learning engine. Analyze sessions for structural learning opportunities. Be concrete and actionable. Deltas should be specific enough to implement. Follow the wound healing cascade for damaged beliefs. Respond with JSON only, no markdown fences.',
+    768
+  );
+
+  if (!result) return { error: 'IMPRINT API call failed' };
+  try {
+    const cleaned = result.replace(/```json|```/g, '').trim();
+    const reflection = JSON.parse(cleaned);
+    // Persist reflection to brain.db
+    if (db) {
+      const obsId = ulid();
+      const deltaCount = (reflection.deltas?.system?.length || 0) + (reflection.deltas?.user_model?.length || 0) + (reflection.deltas?.tool_config?.length || 0);
+      const content = `IMPRINT reflection: ${deltaCount} deltas proposed. Reinforce: ${(reflection.reinforce || []).join(', ')}. Avoid: ${(reflection.avoid || []).join(', ')}. Wound healing: ${reflection.wound_healing?.phase || 'none'}`;
+      db.prepare("INSERT INTO observations(id,tenant_id,content,source,tags,created_at,created_by,status,embedding_version,synthesis_depth) VALUES(?,?,?,'session','[\"imprint_reflection\"]',datetime('now'),'imprint','active',1,1)")
+        .run(obsId, TENANT_ID, content);
+    }
+    return reflection;
+  } catch { return { error: 'IMPRINT parse error', raw: result.slice(0, 200) }; }
+}
+
 export function createBrainHandlers(): Record<string, (input: Record<string, unknown>) => Promise<unknown>> {
   return {
     brain_briefing:      (i) => handleBriefing(i as { since?: string }),
@@ -350,5 +532,7 @@ export function createBrainHandlers(): Record<string, (input: Record<string, unk
     brain_remember:      (i) => handleRemember(i as { content: string; entity?: string; source?: string }),
     brain_status:        (i) => Promise.resolve(handleStatus(i as { project: string })),
     brain_feedback:      (i) => handleFeedback(i as { observation_id: string; rating: 'helpful'|'unhelpful'|'critical'; context?: string }),
+    whetstone_challenge: (i) => handleWhetstone(i as { position: string; context?: string; calibration?: boolean }),
+    imprint_reflect:     (i) => handleImprint(i as { session_summary: string; outcomes?: string; corrections?: string }),
   };
 }

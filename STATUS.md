@@ -2,7 +2,10 @@
 
 **Status:** production
 **Version:** 3.0.0 (KERNL-BRAIN-02 v3.0 + Cognitive Organism)
-**Last Updated:** 2026-05-17 (cognitive organism validation — all 10 tools operational)
+**Last Updated: 2026-05-17 (auto — chore: INFRA-HYGIENE-01 - STATUS.md current, brain-tools v3.)
+**Code Health:** 13/100 (23 critical, 355 warnings) (auto — EoS)
+**Completion:** 83% (auto — 19 done, 4 pending)
+**Tests:** failing (exit 1)
 
 ---
 

@@ -228,3 +228,109 @@ CREATE TABLE IF NOT EXISTS shadow_docs (
 
 CREATE INDEX IF NOT EXISTS idx_shadow_docs_project ON shadow_docs(project_id);
 CREATE INDEX IF NOT EXISTS idx_shadow_docs_status ON shadow_docs(status);
+
+
+-- ============================================================================
+-- YUMA — Test Specifications
+-- "If it survives Yuma, it survives anything."
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS test_specs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  tier TEXT NOT NULL,
+  type TEXT NOT NULL,
+  spec TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_run TEXT,
+  last_result TEXT,
+  run_count INTEGER DEFAULT 0,
+  fail_count INTEGER DEFAULT 0,
+  consecutive_passes INTEGER DEFAULT 0,
+  source_file TEXT,
+  tags TEXT,
+  origin_commit TEXT,
+  origin_issue TEXT,
+  generated_by TEXT DEFAULT 'human',
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_test_specs_project ON test_specs(project_id);
+CREATE INDEX IF NOT EXISTS idx_test_specs_tier ON test_specs(tier);
+CREATE INDEX IF NOT EXISTS idx_test_specs_result ON test_specs(last_result);
+-- ============================================================================
+-- YUMA — Test Run History
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS test_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  trigger TEXT NOT NULL,
+  tier_filter TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  total INTEGER DEFAULT 0,
+  passed INTEGER DEFAULT 0,
+  failed INTEGER DEFAULT 0,
+  skipped INTEGER DEFAULT 0,
+  results TEXT,
+  health_score REAL,
+  prophecies TEXT,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_test_runs_project ON test_runs(project_id);
+CREATE INDEX IF NOT EXISTS idx_test_runs_started ON test_runs(started_at DESC);
+
+-- ============================================================================
+-- YUMA — Test Worlds (fixture definitions)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS test_worlds (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  version TEXT NOT NULL DEFAULT '1.0.0',
+  description TEXT,  fixtures TEXT NOT NULL,
+  setup_command TEXT,
+  teardown_command TEXT,
+  isolation TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_used TEXT,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_test_worlds_project ON test_worlds(project_id);
+
+-- ============================================================================
+-- YUMA — Mutation Testing Results
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS mutation_results (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  source_file TEXT NOT NULL,
+  test_file TEXT NOT NULL,
+  mutations_generated INTEGER DEFAULT 0,
+  mutations_caught INTEGER DEFAULT 0,
+  mutations_missed INTEGER DEFAULT 0,
+  coverage_score REAL,
+  risk_level TEXT,
+  details TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_mutation_project ON mutation_results(project_id);
+-- ============================================================================
+-- YUMA — Test Baselines (benchmark reference points)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS test_baselines (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value REAL NOT NULL,
+  tolerance REAL DEFAULT 1.2,
+  measured_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  UNIQUE(project_id, key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_baselines_project ON test_baselines(project_id);

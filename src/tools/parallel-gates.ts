@@ -28,7 +28,7 @@ const execAsync = promisify(exec);
 // TYPES
 // ============================================================================
 
-export type GateName = 'git' | 'code' | 'ui' | 'backlog' | 'patterns';
+export type GateName = 'git' | 'code' | 'ui' | 'backlog' | 'patterns' | 'tests';
 
 interface GateResult {
   gate: GateName;
@@ -96,7 +96,7 @@ USE CASES:
           type: 'array',
           items: {
             type: 'string',
-            enum: ['git', 'code', 'ui', 'backlog', 'patterns'],
+            enum: ['git', 'code', 'ui', 'backlog', 'patterns', 'tests'],
           },
           description: 'Specific gates to check (default: all 5)',
         },
@@ -114,7 +114,7 @@ export function createParallelGatesHandlers(db: ProjectDatabase) {
   return {
     five_gate_check: async (input: ParallelGatesInput): Promise<ToolResult<ParallelGatesOutput>> => {
       const startTime = Date.now();
-      const { project, system, gates = ['git', 'code', 'ui', 'backlog', 'patterns'] } = input;
+      const { project, system, gates = ['git', 'code', 'ui', 'backlog', 'patterns', 'tests'] } = input;
 
       // Get project path
       const projectInfo = db.getProject(project);
@@ -137,11 +137,12 @@ export function createParallelGatesHandlers(db: ProjectDatabase) {
         ui: () => checkCodeGate(projectPath, system, '.tsx'),
         backlog: () => checkBacklogGate(db, project, system),
         patterns: () => checkPatternsGate(db, project, system),
+        tests: () => checkTestsGate(db, project),
       };
 
       // Run selected gates in parallel
       const selectedGates = gates.filter((g): g is GateName => 
-        ['git', 'code', 'ui', 'backlog', 'patterns'].includes(g)
+        ['git', 'code', 'ui', 'backlog', 'patterns', 'tests'].includes(g)
       );
 
       const gatePromises = selectedGates.map(gate => gateCheckers[gate]());
@@ -409,5 +410,63 @@ async function searchFilesRecursive(
     }
   } catch {
     // Skip inaccessible directories
+  }
+}
+
+
+// ============================================================================
+// TESTS GATE — Yuma health check
+// ============================================================================
+
+async function checkTestsGate(db: ProjectDatabase, project: string): Promise<GateResult> {
+  const startTime = Date.now();
+  try {
+    const raw = (db as any).db ?? db;
+    const specs = raw.prepare('SELECT * FROM test_specs WHERE project_id = ?').all(project) as any[];
+    
+    if (specs.length === 0) {
+      return {
+        gate: 'tests',
+        status: 'empty',
+        duration_ms: Date.now() - startTime,
+        count: 0,
+        data: { message: 'No test specs defined', health_score: 0, band: 'RED' },
+      };
+    }
+
+    const passing = specs.filter((s: any) => s.last_result === 'pass').length;
+    const failing = specs.filter((s: any) => s.last_result === 'fail' || s.last_result === 'error').length;
+    const neverRun = specs.filter((s: any) => !s.last_run).length;
+    const hasRun = specs.filter((s: any) => s.last_run);
+    
+    const coverage = ((specs.length - neverRun) / specs.length) * 100;
+    const passRate = hasRun.length > 0 ? (passing / hasRun.length) * 100 : 0;
+    const score = Math.round((coverage * 0.5) + (passRate * 0.5));
+    const band = score >= 90 ? 'GREEN' : score >= 70 ? 'YELLOW' : score >= 50 ? 'ORANGE' : 'RED';
+
+    // Tier breakdown
+    const tiers: Record<string, number> = {};
+    for (const s of specs) { tiers[s.tier] = (tiers[s.tier] || 0) + 1; }
+
+    return {
+      gate: 'tests',
+      status: failing > 0 ? 'error' : 'success',
+      duration_ms: Date.now() - startTime,
+      count: specs.length,
+      data: {
+        specs_total: specs.length,
+        passing, failing, never_run: neverRun,
+        health_score: score, band, tiers,
+        coverage_gaps: !tiers['smoke'] ? ['no smoke tests'] : !tiers['chain'] ? ['no chain tests'] : [],
+      },
+    };
+  } catch {
+    return {
+      gate: 'tests',
+      status: 'empty',
+      duration_ms: Date.now() - startTime,
+      count: 0,
+      data: { message: 'Yuma tables not available' },
+    };
   }
 }

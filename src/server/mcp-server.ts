@@ -90,7 +90,7 @@ export class KernlMCPServer {
     register(shadowDocTools,         createShadowDocHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
     register(gitTools,               createGitHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
     register(backlogTools,           createBacklogHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
-    register(testingTools,           createTestingHandlers(Array.from(this.tools.values())) as Record<string, (input: unknown) => Promise<unknown>>);
+    register(testingTools,           createTestingHandlers(Array.from(this.tools.values()), this.db) as Record<string, (input: unknown) => Promise<unknown>>);
     register(utilityTools,           createUtilityHandlers() as Record<string, (input: unknown) => Promise<unknown>>);
     register(researchTools,          createResearchHandlers(this.db) as Record<string, (input: unknown) => Promise<unknown>>);
 

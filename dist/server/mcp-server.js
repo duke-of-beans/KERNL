@@ -75,7 +75,7 @@ export class KernlMCPServer {
         register(shadowDocTools, createShadowDocHandlers(this.db));
         register(gitTools, createGitHandlers(this.db));
         register(backlogTools, createBacklogHandlers(this.db));
-        register(testingTools, createTestingHandlers(Array.from(this.tools.values())));
+        register(testingTools, createTestingHandlers(Array.from(this.tools.values()), this.db));
         register(utilityTools, createUtilityHandlers());
         register(researchTools, createResearchHandlers(this.db));
         // Phase 8: Brain Intelligence

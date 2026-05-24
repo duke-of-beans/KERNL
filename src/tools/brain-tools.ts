@@ -182,6 +182,27 @@ function buildFtsQuery(query: string): string {
   return tokens.length > 0 ? tokens.join(' OR ') : query.replace(/"/g, '');
 }
 
+/** PROMETHEUS-W3: ensure the IMPRINT intentions table exists (idempotent).
+ *  Mirrors the lazy-create pattern used for feedback_log. Intentions are
+ *  forward-intention deltas (what David is working toward) with a 72h expiry.
+ *  Private to brain.db; never surfaced to external systems. */
+function ensureIntentionsTable(db: BrainDB): void {
+  db.prepare(`CREATE TABLE IF NOT EXISTS intentions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity TEXT NOT NULL,
+  intention TEXT NOT NULL,
+  metacognitive_state TEXT CHECK(metacognitive_state IN ('flow', 'stuck', 'exploring', 'converging', 'wrapping_up')) DEFAULT 'exploring',
+  created_at TEXT DEFAULT (datetime('now')),
+  expires_at TEXT DEFAULT (datetime('now', '+72 hours')),
+  refreshed_at TEXT DEFAULT NULL,
+  resolved_at TEXT DEFAULT NULL,
+  session_id TEXT DEFAULT NULL,
+  context TEXT DEFAULT NULL
+)`).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_intentions_entity ON intentions(entity)`).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_intentions_active ON intentions(expires_at) WHERE resolved_at IS NULL`).run();
+}
+
 export const brainTools: Tool[] = [
   {
     name: 'brain_briefing',

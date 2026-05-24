@@ -215,10 +215,25 @@ function getCurrentSessionId(db: BrainDB): string | null {
   } catch { return null; }
 }
 
+/** PROMETHEUS-W3: format a future SQLite/ISO datetime as a short relative
+ *  string (in 5m / in 8h / in 3d). Used to show intention expiry. */
+function relativeTime(iso: string): string {
+  const norm = iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z';
+  const ts = Date.parse(norm);
+  if (isNaN(ts)) return 'unknown';
+  const diff = ts - Date.now();
+  if (diff <= 0) return 'expired';
+  const mins = Math.round(diff / 60000);
+  if (mins < 60) return `in ${mins}m`;
+  const hours = Math.round(diff / 3600000);
+  if (hours < 48) return `in ${hours}h`;
+  return `in ${Math.round(diff / 86400000)}d`;
+}
+
 export const brainTools: Tool[] = [
   {
     name: 'brain_briefing',
-    description: 'Live portfolio delta from brain.db — P0 items, changed signals, recent observations, open gaps. Call at session start for live context.',
+    description: 'Live portfolio delta from brain.db — P0 items, changed signals, recent observations, open gaps, active intentions. Call at session start for live context.',
     inputSchema: { type: 'object', properties: { since: { type: 'string', description: 'ISO datetime to delta from (optional)' } } },
   },
   {
@@ -393,10 +408,28 @@ async function handleBriefing(input: { since?: string }): Promise<object> {
       } catch { return []; }
     })();
 
+    // --- Active Intentions (PROMETHEUS-W3) ---
+    const activeIntentions = (() => {
+      try {
+        ensureIntentionsTable(db);
+        const rows = db.prepare(
+          "SELECT entity, intention, metacognitive_state, expires_at FROM intentions WHERE resolved_at IS NULL AND expires_at > datetime('now') ORDER BY created_at DESC LIMIT 5"
+        ).all() as { entity: string; intention: string; metacognitive_state: string; expires_at: string }[];
+        return rows.map(r => ({
+          entity: r.entity,
+          intention: r.intention,
+          metacognitive_state: r.metacognitive_state,
+          expires: relativeTime(r.expires_at),
+          display: `[${r.entity}] ${r.intention} (state: ${r.metacognitive_state}, expires: ${relativeTime(r.expires_at)})`,
+        }));
+      } catch { return []; }
+    })();
+
     const result = {
       delta_since: deltaSince, p0_items: p0Items, changed_signals: changedSignals,
       recent_observations: recentObs.map(o => ({ content: o.content.length > 200 ? o.content.slice(0, 200) + '…' : o.content, entity: o.entity_name, source: o.source, created_at: o.created_at })),
       dopamine_hits: dopamineHits,
+      ...(activeIntentions.length > 0 ? { active_intentions: activeIntentions } : {}),
       open_gaps: openGaps,
       session_note: `${recentObs.length} new observations since last session. ${projectCount} active projects. ${openGaps} open gaps.${dopamineHits.length > 0 ? ` ${dopamineHits.length} dopamine hits.` : ''}`,
     };

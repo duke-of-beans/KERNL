@@ -68,7 +68,7 @@ function callClaudeAPI(prompt: string, systemPrompt: string, maxTokens = 1024): 
 interface PreparedStmt {
   all(...args: unknown[]): unknown[];
   get(...args: unknown[]): unknown | undefined;
-  run(...args: unknown[]): { changes: number };
+  run(...args: unknown[]): { changes: number; lastInsertRowid: number | bigint };
 }
 interface BrainDB {
   pragma(cmd: string): unknown;
@@ -203,6 +203,18 @@ function ensureIntentionsTable(db: BrainDB): void {
   db.prepare(`CREATE INDEX IF NOT EXISTS idx_intentions_active ON intentions(expires_at) WHERE resolved_at IS NULL`).run();
 }
 
+/** PROMETHEUS-W3: best-effort lookup of the current (recent, still-open)
+ *  brain.db session id, used to stamp new intentions. Returns null when no
+ *  recent session is available -- intentions never block on this. */
+function getCurrentSessionId(db: BrainDB): string | null {
+  try {
+    const row = db.prepare(
+      "SELECT id FROM sessions WHERE tenant_id=? AND ended_at IS NULL AND started_at > datetime('now','-1 day') ORDER BY started_at DESC LIMIT 1"
+    ).get(TENANT_ID) as { id: string } | undefined;
+    return row?.id ?? null;
+  } catch { return null; }
+}
+
 export const brainTools: Tool[] = [
   {
     name: 'brain_briefing',
@@ -310,6 +322,20 @@ export const brainTools: Tool[] = [
         corrections: { type: 'string', description: 'Any corrections David made to Claude output' },
       },
       required: ['session_summary'],
+    },
+  },
+  {
+    name: 'imprint_set_intention',
+    description: 'IMPRINT intention delta -- record what David is working toward for an entity, plus metacognitive state. Persists to brain.db, surfaces in brain_briefing, expires after 72h unless refreshed. Re-setting the active intention for an entity updates it in place rather than duplicating.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', description: 'Entity or project this intention is about' },
+        intention: { type: 'string', description: 'What is being worked toward or planned next' },
+        metacognitive_state: { type: 'string', enum: ['flow', 'stuck', 'exploring', 'converging', 'wrapping_up'], description: 'Current cognitive state (default: exploring)' },
+        context: { type: 'string', description: 'Optional extra context for the intention' },
+      },
+      required: ['entity', 'intention'],
     },
   },
 ];
@@ -760,6 +786,33 @@ async function handleInvalidate(input: { observation_id: string; reason: string 
   } catch (e) { return { error: (e as Error).message }; }
 }
 
+/** PROMETHEUS-W3: imprint_set_intention -- create or update an entity's
+ *  active intention. One active intention per entity; re-setting updates in
+ *  place and refreshes the 72h expiry window. */
+function handleSetIntention(input: { entity: string; intention: string; metacognitive_state?: string; context?: string }): object {
+  const db = getBrainDb();
+  if (!db) return { error: 'brain.db unavailable' };
+  if (!input.entity || !input.intention) return { error: 'entity and intention are both required' };
+  try {
+    ensureIntentionsTable(db);
+    const state = input.metacognitive_state ?? 'exploring';
+    const sessionId = getCurrentSessionId(db);
+    const existing = db.prepare(
+      "SELECT id FROM intentions WHERE entity=? AND resolved_at IS NULL AND expires_at > datetime('now') ORDER BY created_at DESC LIMIT 1"
+    ).get(input.entity) as { id: number } | undefined;
+    if (existing) {
+      db.prepare(
+        "UPDATE intentions SET intention=?, metacognitive_state=?, context=?, refreshed_at=datetime('now'), expires_at=datetime('now','+72 hours') WHERE id=?"
+      ).run(input.intention, state, input.context ?? null, existing.id);
+      return { intention_id: existing.id, entity: input.entity, action: 'updated', metacognitive_state: state, expires_in_hours: 72 };
+    }
+    const info = db.prepare(
+      "INSERT INTO intentions (entity, intention, metacognitive_state, session_id, context) VALUES (?,?,?,?,?)"
+    ).run(input.entity, input.intention, state, sessionId, input.context ?? null);
+    return { intention_id: Number(info.lastInsertRowid), entity: input.entity, action: 'created', metacognitive_state: state, session_id: sessionId, expires_in_hours: 72 };
+  } catch (e) { return { error: (e as Error).message }; }
+}
+
 export function createBrainHandlers(): Record<string, (input: Record<string, unknown>) => Promise<unknown>> {
   return {
     brain_briefing:      (i) => handleBriefing(i as { since?: string }),
@@ -770,5 +823,6 @@ export function createBrainHandlers(): Record<string, (input: Record<string, unk
     brain_feedback:      (i) => handleFeedback(i as { observation_id: string; rating: 'helpful'|'unhelpful'|'critical'; context?: string }),
     whetstone_challenge: (i) => handleWhetstone(i as { position: string; context?: string; calibration?: boolean; mode?: string; source_file?: string; test_file?: string; mutation_count?: number }),
     imprint_reflect:     (i) => handleImprint(i as { session_summary: string; outcomes?: string; corrections?: string }),
+    imprint_set_intention: (i) => Promise.resolve(handleSetIntention(i as { entity: string; intention: string; metacognitive_state?: string; context?: string })),
   };
 }

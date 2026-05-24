@@ -761,8 +761,25 @@ async function handleImprint(input: { session_summary: string; outcomes?: string
     recentObs = recent.map(o => `[${o.created_at.slice(0, 10)}] ${o.content.slice(0, 150)}`).join('\n');
   }
 
+  // --- Intention lifecycle (PROMETHEUS-W3): load active intentions to reconcile ---
+  let activeIntentions: { id: number; entity: string; intention: string; metacognitive_state: string }[] = [];
+  if (db) {
+    try {
+      ensureIntentionsTable(db);
+      activeIntentions = db.prepare(
+        "SELECT id, entity, intention, metacognitive_state FROM intentions WHERE resolved_at IS NULL AND expires_at > datetime('now') ORDER BY created_at DESC LIMIT 20"
+      ).all() as { id: number; entity: string; intention: string; metacognitive_state: string }[];
+    } catch { /* intention lifecycle load is best-effort */ }
+  }
+  const intentionsBlock = activeIntentions.length > 0
+    ? `\n\nActive intentions currently tracked (reconcile against this session):\n${activeIntentions.map(i => `  [id ${i.id}] (${i.entity}) ${i.intention} -- state: ${i.metacognitive_state}`).join('\n')}\n\nFor each, decide whether this session RESOLVED it (work finished or abandoned), ADVANCED it (progress made -- refresh its expiry), or left it UNCHANGED.`
+    : '';
+  const lifecycleField = activeIntentions.length > 0
+    ? ', "intention_lifecycle": [{"id": <intention id>, "action": "resolve"|"advance"|"unchanged", "reason": "brief reason"}]'
+    : '';
+
   const result = await callClaudeAPI(
-    `Session summary: ${input.session_summary}\n${input.outcomes ? 'Outcomes: ' + input.outcomes : ''}\n${input.corrections ? 'Corrections David made: ' + input.corrections : ''}\n\nRecent observations:\n${recentObs}\n\nGenerate a post-session reflection with typed deltas:\n- ΔS: proposed changes to system prompt / bootstrap instructions\n- ΔU: updated understanding of David's preferences, patterns, working style\n- ΔT: proposed changes to tool configuration or workflow\n- ΔI: forward intentions — active hypotheses (with confidence), planned next moves, cognitive state during session\n  - hypothesis: what David/Claude thinks might be true, with confidence 0-1\n  - next_move: planned actions for next session\n  - state: cognitive mode during session (deep_flow, scattered, frustrated, eureka, systematic, exploratory)\n\nAlso identify: what worked well (reinforce), what failed (avoid), what patterns are emerging.\n\nRespond with JSON: {"deltas": {"system": ["delta1", ...], "user_model": ["delta1", ...], "tool_config": ["delta1", ...], "intentions": [{"subtype": "hypothesis"|"next_move"|"state", "content": "...", "confidence": 0.0-1.0, "related_entities": ["entity1"], "cognitive_state": "deep_flow"|"scattered"|"frustrated"|"eureka"|"systematic"|"exploratory"}]}, "reinforce": ["pattern to keep"], "avoid": ["pattern to stop"], "emerging_patterns": ["pattern noticed"], "wound_healing": {"phase": "hemostasis|inflammation|proliferation|remodeling|none", "description": "if any belief was damaged, where in the healing cascade"}}`,
+    `Session summary: ${input.session_summary}\n${input.outcomes ? 'Outcomes: ' + input.outcomes : ''}\n${input.corrections ? 'Corrections David made: ' + input.corrections : ''}\n\nRecent observations:\n${recentObs}${intentionsBlock}\n\nGenerate a post-session reflection with typed deltas:\n- ΔS: proposed changes to system prompt / bootstrap instructions\n- ΔU: updated understanding of David's preferences, patterns, working style\n- ΔT: proposed changes to tool configuration or workflow\n- ΔI: forward intentions — active hypotheses (with confidence), planned next moves, cognitive state during session\n  - hypothesis: what David/Claude thinks might be true, with confidence 0-1\n  - next_move: planned actions for next session\n  - state: cognitive mode during session (deep_flow, scattered, frustrated, eureka, systematic, exploratory)\n\nAlso identify: what worked well (reinforce), what failed (avoid), what patterns are emerging.\n\nRespond with JSON: {"deltas": {"system": ["delta1", ...], "user_model": ["delta1", ...], "tool_config": ["delta1", ...], "intentions": [{"subtype": "hypothesis"|"next_move"|"state", "content": "...", "confidence": 0.0-1.0, "related_entities": ["entity1"], "cognitive_state": "deep_flow"|"scattered"|"frustrated"|"eureka"|"systematic"|"exploratory"}]}, "reinforce": ["pattern to keep"], "avoid": ["pattern to stop"], "emerging_patterns": ["pattern noticed"], "wound_healing": {"phase": "hemostasis|inflammation|proliferation|remodeling|none", "description": "if any belief was damaged, where in the healing cascade"}${lifecycleField}}`,
     'You are IMPRINT — a reflection and learning engine. Analyze sessions for structural learning opportunities. Be concrete and actionable. Deltas should be specific enough to implement. For ΔI intentions: hypotheses persist permanently (National Razor — never discard unproven ideas), next_moves get 72h expiry, state observations are metacognitive data. Follow the wound healing cascade for damaged beliefs. Respond with JSON only, no markdown fences.',
     1024
   );
@@ -783,6 +800,7 @@ async function handleImprint(input: { session_summary: string; outcomes?: string
       // Persist ΔI intentions as individual observations
       const intentions = reflection.deltas?.intentions || [];
       for (const intent of intentions) {
+        try {
         const iId = ulid();
         const intentSource = intent.subtype === 'hypothesis' ? 'imprint_hypothesis'
                            : intent.subtype === 'next_move' ? 'imprint_next_move'
@@ -801,7 +819,21 @@ async function handleImprint(input: { session_summary: string; outcomes?: string
           const emb = await generateEmbedding('search_document: ' + intentContent);
           db.prepare('UPDATE observations SET embedding=? WHERE id=?').run(Buffer.from(emb.buffer), iId);
         } catch { /* saved without embedding */ }
+        } catch { /* per-intention persistence is best-effort: observations.source CHECK rejects imprint_* sources */ }
       }
+    }
+    // --- Intention lifecycle apply (PROMETHEUS-W3): best-effort, never blocks ---
+    if (db && activeIntentions.length > 0 && Array.isArray(reflection.intention_lifecycle)) {
+      try {
+        const activeIds = new Set(activeIntentions.map(i => i.id));
+        const resolveStmt = db.prepare("UPDATE intentions SET resolved_at=datetime('now') WHERE id=? AND resolved_at IS NULL");
+        const advanceStmt = db.prepare("UPDATE intentions SET refreshed_at=datetime('now'), expires_at=datetime('now','+72 hours') WHERE id=? AND resolved_at IS NULL");
+        for (const lc of reflection.intention_lifecycle) {
+          if (!lc || typeof lc.id !== 'number' || !activeIds.has(lc.id)) continue;
+          if (lc.action === 'resolve') resolveStmt.run(lc.id);
+          else if (lc.action === 'advance') advanceStmt.run(lc.id);
+        }
+      } catch { /* lifecycle apply is best-effort */ }
     }
     return reflection;
   } catch { return { error: 'IMPRINT parse error', raw: result.slice(0, 200) }; }

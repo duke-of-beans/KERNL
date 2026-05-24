@@ -338,6 +338,17 @@ export const brainTools: Tool[] = [
       required: ['entity', 'intention'],
     },
   },
+  {
+    name: 'imprint_resolve_intention',
+    description: 'IMPRINT intention delta -- mark an intention resolved when its work is finished or abandoned. Resolve by entity (the most recent active intention for that entity) or by specific id. Resolved intentions no longer surface in brain_briefing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', description: 'Entity whose most recent active intention to resolve' },
+        id: { type: 'number', description: 'Specific intention id to resolve (overrides entity when provided)' },
+      },
+    },
+  },
 ];
 
 async function handleBriefing(input: { since?: string }): Promise<object> {
@@ -813,6 +824,30 @@ function handleSetIntention(input: { entity: string; intention: string; metacogn
   } catch (e) { return { error: (e as Error).message }; }
 }
 
+/** PROMETHEUS-W3: imprint_resolve_intention -- mark an intention resolved
+ *  (work finished or abandoned). By id, or by entity (most recent active
+ *  intention for that entity). Resolved intentions stop surfacing. */
+function handleResolveIntention(input: { entity?: string; id?: number }): object {
+  const db = getBrainDb();
+  if (!db) return { error: 'brain.db unavailable' };
+  if (input.id === undefined && !input.entity) return { error: 'either entity or id is required' };
+  try {
+    ensureIntentionsTable(db);
+    if (input.id !== undefined) {
+      const r = db.prepare("UPDATE intentions SET resolved_at=datetime('now') WHERE id=? AND resolved_at IS NULL").run(input.id);
+      return r.changes > 0
+        ? { intention_id: input.id, action: 'resolved' }
+        : { intention_id: input.id, action: 'noop', note: 'no matching unresolved intention' };
+    }
+    const target = db.prepare(
+      "SELECT id FROM intentions WHERE entity=? AND resolved_at IS NULL ORDER BY created_at DESC LIMIT 1"
+    ).get(input.entity) as { id: number } | undefined;
+    if (!target) return { entity: input.entity, action: 'noop', note: 'no active intention for entity' };
+    db.prepare("UPDATE intentions SET resolved_at=datetime('now') WHERE id=?").run(target.id);
+    return { intention_id: target.id, entity: input.entity, action: 'resolved' };
+  } catch (e) { return { error: (e as Error).message }; }
+}
+
 export function createBrainHandlers(): Record<string, (input: Record<string, unknown>) => Promise<unknown>> {
   return {
     brain_briefing:      (i) => handleBriefing(i as { since?: string }),
@@ -824,5 +859,6 @@ export function createBrainHandlers(): Record<string, (input: Record<string, unk
     whetstone_challenge: (i) => handleWhetstone(i as { position: string; context?: string; calibration?: boolean; mode?: string; source_file?: string; test_file?: string; mutation_count?: number }),
     imprint_reflect:     (i) => handleImprint(i as { session_summary: string; outcomes?: string; corrections?: string }),
     imprint_set_intention: (i) => Promise.resolve(handleSetIntention(i as { entity: string; intention: string; metacognitive_state?: string; context?: string })),
+    imprint_resolve_intention: (i) => Promise.resolve(handleResolveIntention(i as { entity?: string; id?: number })),
   };
 }

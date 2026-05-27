@@ -2,8 +2,8 @@
 
 **Transform Claude from stateless assistant into persistent intelligence layer**
 
-![Version](https://img.shields.io/badge/version-5.0.1-blue)
-![Tools](https://img.shields.io/badge/tools-101-green)
+![Version](https://img.shields.io/badge/version-6.0.0-blue)
+![Tools](https://img.shields.io/badge/tools-128-green)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -24,10 +24,13 @@ KERNL provides aggressive session state management with automatic checkpointing 
 
 **Core Capabilities:**
 - **Crash Recovery**: Automatic checkpoints with 1-click resume
-- **Semantic Search**: Find solutions across all projects by concept, not keyword
-- **Cross-Project Learning**: Patterns learned in one codebase transfer to others  
+- **Semantic Memory (brain.db)**: RRF hybrid search (vector + BM25 + semantic rerank), ACT-R decay, graph-enhanced recall across 7k+ edges, SHA-256 dedup
+- **Cross-Project Learning**: Structural isomorphism detection, pattern transfer between codebases
+- **YUMA Testing**: Multi-tier quality gates (static analysis, API contracts, terminology compliance, dependency graphs, evidence chain integrity)
+- **WHETSTONE**: Adversarial engine via Anthropic API. Challenges positions with strongest counterargument. Code mutation testing identifies untested paths
+- **IMPRINT**: Post-session reflection engine. Typed deltas, wound healing cascade, preference tracking
 - **Chrome Automation**: 19 tools for browser-based workflows
-- **101 Tools Across 17 Categories**: Session management, file operations, intelligence layer, process control, git integration, and more
+- **128 Tools Across 19 Categories**: Session management, file operations, intelligence layer, process control, git integration, testing, brain/memory, adversarial, research, and more
 
 ## Why This Exists
 
@@ -132,14 +135,14 @@ KERNL:mark_complete({
 
 **ONNX Embeddings** - Local transformer model (all-MiniLM-L6-v2) for semantic search. No API calls, instant results, works offline.
 
-**Modular Tool Categories** - 17 categories (session, project, file, intelligence, chrome, git, backlog, testing, utilities, research, etc.) with clear boundaries and independent operation.
+**Modular Tool Categories** - 19 categories with clear boundaries and independent operation. Cognitive systems (WHETSTONE, IMPRINT, brain.db) integrate with infrastructure tools (testing, git, process management) through shared state in brain.db.
 
 **Protocol-Driven Quality** - Every tool has explicit input validation, comprehensive error handling, and typed interfaces. No mocks, no stubs, no placeholders—production-quality code or nothing.
 
-## Tool Categories (101 Total)
+## Tool Categories (128 Total)
 
 - **Session Management** (5 tools): Checkpoints, recovery, state management
-- **Project Operations** (5 tools): Register, list, update, delete projects
+- **Project Operations** (6 tools): Register, list, update, delete, status
 - **File Operations** (6 tools): Read, write, search, batch operations  
 - **Semantic Search** (3 tools): Concept-based search, indexing, patterns
 - **Pattern Recognition** (3 tools): Cross-project learning, suggest solutions
@@ -150,19 +153,26 @@ KERNL:mark_complete({
 - **Config & Meta** (4 tools): Version, status, configuration management
 - **Chrome Automation** (19 tools): Browser control, scraping, interaction
 - **Shadow Docs** (4 tools): Parallel documentation system
-- **Git Tools** (2 tools): Smart commits, session packaging
+- **Git Tools** (3 tools): Smart commits, session packaging, staged versioning
 - **Backlog** (5 tools): EPIC management, sprint tracking
-- **Testing** (4 tools): Test generation, coverage, CI integration
-- **Utilities** (12 tools): Helpers, formatters, converters
-- **Research** (10 tools): Paper indexing, citation management, analysis
+- **Testing / YUMA** (12 tools): Test generation, contracts, chains, baselines, precommit, health scores
+- **Brain / Memory** (7 tools): brain_briefing, brain_recall (RRF), brain_recall_graph, brain_remember, brain_status, brain_feedback, brain_invalidate
+- **Adversarial / WHETSTONE** (1 tool): Epistemic challenge + code mutation testing via Anthropic API
+- **Reflection / IMPRINT** (3 tools): Post-session reflection, intention tracking, intention resolution
+- **Utilities** (12 tools): Helpers, formatters, converters, backup, disk usage
+- **Research** (10 tools): Notes, search, tags, links, export, summary
 
 ## Current Status
 
-**Production** - Active daily use across multiple development projects. Prevents estimated 10-15 hours/week of context loss from crashes and bootstrap overhead.
+**Production v6.0.0** - Active daily use across multiple development projects. 128 tools across 19 categories. Nine-system cognitive architecture operational (brain.db memory, WHETSTONE adversarial, IMPRINT reflection, YUMA testing, plus NIGHTSHIFT maintenance running 13 daily passes).
 
-**Rebuilt From Chat History** - This entire codebase (101 tools, 17 categories, full test coverage) was reconstructed from Claude conversation history alone after accidental deletion on January 14, 2026. Completed same day.
+**YUMA Testing Subsystem** - Multi-tier quality gates deployed to production projects. Static analysis (route sync, voice compliance, security), behavioral contracts (API patterns, status codes), terminology compliance (legal risk scanning), dependency graphs, evidence chain integrity. Example: TRACE project runs 17 tests / 84 checks pre-deploy.
 
-**Continuous Evolution** - New tools added as friction points emerge. Current focus: enhanced Chrome automation for job application workflows.
+**brain.db v3.0** - Reciprocal Rank Fusion hybrid retrieval (vector + BM25 + semantic rerank). ACT-R decay modeling. 7k+ graph edges with structural isomorphism detection. SHA-256 dedup (97.7% noise reduction). Retrieval tracking feeds decay calculations.
+
+**WHETSTONE** - Adversarial engine calling Anthropic API for heterogeneous counter-positions. Two modes: epistemic (challenge assumptions with strongest counterargument) and code (intelligent mutation testing that identifies untested paths). Optional calibration dataset matching.
+
+**Rebuilt From Chat History** - The original 101-tool codebase was reconstructed from Claude conversation history alone after accidental deletion on January 14, 2026. Completed same day. Current 128-tool version evolved from that foundation.
 
 ## Documentation
 

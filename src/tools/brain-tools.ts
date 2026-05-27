@@ -364,6 +364,20 @@ export const brainTools: Tool[] = [
       },
     },
   },
+  {
+    name: 'project_context_scan',
+    description: 'Cross-pollinator: scan the portfolio for tools, patterns, and APIs relevant to the current project. ' +
+      'Queries brain.db graph neighbors, finds cross-project patterns, checks D:\\Meta\\ for available API keys. ' +
+      'Call at session start when working on any project, or when building a new feature.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Project name or entity (e.g., "TRACE", "Oktyv")' },
+        task: { type: 'string', description: 'Optional: what you are about to build, for pattern matching' },
+      },
+      required: ['project'],
+    },
+  },
 ];
 
 async function handleBriefing(input: { since?: string }): Promise<object> {
@@ -913,6 +927,99 @@ function handleResolveIntention(input: { entity?: string; id?: number }): object
   } catch (e) { return { error: (e as Error).message }; }
 }
 
+/** PROJECT CONTEXT SCAN — Cross-pollinator
+ *  Scans portfolio for tools, patterns, and APIs relevant to current project.
+ *  Queries brain.db graph, checks D:\Meta\ for API keys, finds cross-project patterns. */
+async function handleProjectContextScan(input: { project: string; task?: string }): Promise<object> {
+  const db = getBrainDb();
+  if (!db) return { error: 'brain.db unavailable' };
+
+  try {
+    // 1. Find the project entity
+    const entity = db.prepare(
+      "SELECT id, name, type, metadata FROM entities WHERE tenant_id = ? AND (name LIKE ? OR name LIKE ?) AND status = 'active' LIMIT 1"
+    ).get(TENANT_ID, `%${input.project}%`, input.project) as { id: string; name: string; type: string; metadata: string } | undefined;
+
+    // 2. Get graph neighbors (structural isomorphisms, co-mentions, peers)
+    let neighbors: { entity_name: string; relationship: string; weight: number }[] = [];
+    if (entity) {
+      try {
+        const rawNeighbors = getNeighborEntities(db, TENANT_ID, entity.id, 10);
+        neighbors = rawNeighbors.map((n: { entity_name: string; relationship: string; weight: number }) => ({
+          entity_name: n.entity_name,
+          relationship: n.relationship,
+          weight: n.weight,
+        }));
+      } catch { /* graph may not be available */ }
+    }
+
+    // 3. Get recent observations about this project
+    const recentObs = entity ? (db.prepare(
+      "SELECT content, source, created_at FROM observations WHERE tenant_id = ? AND entity_id = ? AND status != 'archived' ORDER BY created_at DESC LIMIT 5"
+    ).all(TENANT_ID, entity.id) as { content: string; source: string; created_at: string }[]) : [];
+
+    // 4. Scan D:\Meta\ for available API files
+    const apiFiles: { service: string; file: string }[] = [];
+    try {
+      const metaDir = 'D:\\Meta';
+      const files = fs.readdirSync(metaDir);
+      for (const f of files) {
+        if ((f.endsWith(' API.md') || f.endsWith(' API.txt') || f.includes('API_KEY') || f.includes('Keys.txt')) && !f.startsWith('.')) {
+          const service = f.replace(' API.md', '').replace(' API.txt', '').replace('.md', '').replace('.txt', '');
+          apiFiles.push({ service, file: f });
+        }
+      }
+    } catch { /* D:\Meta may not be accessible */ }
+
+    // 5. Get cross-project patterns if task is provided
+    let relevantPatterns: { id: string; problem: string; solution: string; project: string; confidence: number }[] = [];
+    if (input.task) {
+      try {
+        const patterns = db.prepare(
+          "SELECT id, problem, solution, project, confidence FROM patterns WHERE tenant_id = ? ORDER BY confidence DESC LIMIT 20"
+        ).all(TENANT_ID) as { id: string; problem: string; solution: string; project: string; confidence: number }[];
+        // Simple keyword matching for now (embeddings would be better but this is v1)
+        const taskWords = input.task.toLowerCase().split(/\s+/);
+        relevantPatterns = patterns.filter(p => {
+          const pText = `${p.problem} ${p.solution}`.toLowerCase();
+          return taskWords.some(w => w.length > 3 && pText.includes(w));
+        }).slice(0, 5);
+      } catch { /* patterns table may not exist */ }
+    }
+
+    // 6. Build the briefing
+    return {
+      project: input.project,
+      entity_found: !!entity,
+      entity_name: entity?.name ?? input.project,
+      graph_neighbors: neighbors.filter(n => n.weight > 0.5).map(n => ({
+        project: n.entity_name,
+        relationship: n.relationship,
+        strength: Math.round(n.weight * 100) / 100,
+      })),
+      recent_context: recentObs.map(o => ({
+        content: o.content.slice(0, 200),
+        source: o.source,
+        when: o.created_at,
+      })),
+      available_apis: apiFiles,
+      cross_project_patterns: relevantPatterns.map(p => ({
+        from_project: p.project,
+        problem: p.problem.slice(0, 150),
+        solution: p.solution.slice(0, 150),
+        confidence: p.confidence,
+      })),
+      suggestions: [
+        ...(apiFiles.length > 0 ? [`${apiFiles.length} production API keys available in D:\\Meta\\ — check before signing up for new services`] : []),
+        ...(neighbors.length > 0 ? [`${neighbors.length} related projects in graph — patterns may transfer`] : []),
+        ...(relevantPatterns.length > 0 ? [`${relevantPatterns.length} cross-project patterns match your task`] : []),
+      ],
+    };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+}
+
 export function createBrainHandlers(): Record<string, (input: Record<string, unknown>) => Promise<unknown>> {
   return {
     brain_briefing:      (i) => handleBriefing(i as { since?: string }),
@@ -925,5 +1032,6 @@ export function createBrainHandlers(): Record<string, (input: Record<string, unk
     imprint_reflect:     (i) => handleImprint(i as { session_summary: string; outcomes?: string; corrections?: string }),
     imprint_set_intention: (i) => Promise.resolve(handleSetIntention(i as { entity: string; intention: string; metacognitive_state?: string; context?: string })),
     imprint_resolve_intention: (i) => Promise.resolve(handleResolveIntention(i as { entity?: string; id?: number })),
+    project_context_scan: (i) => handleProjectContextScan(i as { project: string; task?: string }),
   };
 }

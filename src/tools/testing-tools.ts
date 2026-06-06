@@ -1163,8 +1163,13 @@ function computeHealthScore(raw: any, projectId: string): {
     recency = recencies.reduce((a: number, b: number) => a + b, 0) / recencies.length;
   }
 
-  // F: Freshness — placeholder (would need git integration to check if source changed since test)
-  const freshness = hasRun.length > 0 ? 70 : 0; // Default moderate — improve with git check later
+  // F: Freshness — consecutive pass streaks + suite stability
+  let freshness = 0;
+  if (hasRun.length > 0) {
+    const avgConsecutive = hasRun.reduce((sum: number, s: any) => sum + (s.consecutive_passes || 0), 0) / hasRun.length;
+    const stabilityRatio = passRate / 100;
+    freshness = Math.min(100, Math.round(stabilityRatio * (70 + Math.min(30, avgConsecutive * 10))));
+  }
 
   // Weighted score
   const score = Math.round((coverage * 0.30) + (passRate * 0.30) + (recency * 0.15) + (freshness * 0.10) + (50 * 0.15));

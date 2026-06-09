@@ -19,6 +19,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 
 const _require = createRequire(import.meta.url);
@@ -491,7 +492,449 @@ function scoreSprint(sprintText: string, source: string, tierHint?: number, proj
 }
 
 // ==========================================================================
-// TOOL DEFINITIONS (2 tools)
+// TICKET ANALYZER + LEARNING BRIDGE (Gate 3 self-healing)
+// ==========================================================================
+
+const ABORTED_DIR = path.join(QUEUE_DIR, 'aborted');
+const MAX_RETRIES = 2;
+const PATTERN_THRESHOLD = 3;
+const TRIGGER_SIM_THRESHOLD = 0.2;
+
+// Categories whose aborts are mechanically auto-fixable (re-queue without a human).
+const AUTO_FIXABLE_CATEGORIES = new Set([
+  'missing_file',
+  'missing_dependency',
+  'missing_context',
+  'scope_ambiguity',
+  'environment_error',
+]);
+
+// Canonical suggested_fix_category per auto-fixable abort category.
+const SUGGESTED_FIX_BY_CATEGORY: Record<string, string> = {
+  missing_file: 'path_correction',
+  missing_dependency: 'dep_install',
+  missing_context: 'context_injection',
+  scope_ambiguity: 'scope_decomposition',
+  environment_error: 'branch_correction',
+};
+
+interface WritableBrainDB {
+  prepare(sql: string): { get(...args: unknown[]): unknown; run(...args: unknown[]): unknown };
+  close(): void;
+}
+
+interface AbortTicket {
+  sprintId: string;
+  fm: Record<string, string>;
+  body: string;
+  trigger: string;
+}
+
+/** Extract a named "## Heading" section body from an abort ticket. */
+function extractTicketSection(body: string, heading: string): string {
+  const norm = body.replace(/\r\n/g, '\n');
+  const re = new RegExp(`^##\\s+${heading.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*$`, 'mi');
+  const m = re.exec(norm);
+  if (!m) return '';
+  const start = m.index + m[0].length;
+  const nextRel = norm.slice(start).search(/\n##\s+/);
+  return (nextRel === -1 ? norm.slice(start) : norm.slice(start, start + nextRel)).trim();
+}
+
+/** Significant-token set for fuzzy trigger matching. */
+function tokenSet(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 2 && !BRAIN_STOP_WORDS.has(w)),
+  );
+}
+
+/** Jaccard similarity between two token sets. */
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+/** Read + parse every abort ticket in aborted\. */
+function readAbortTickets(): AbortTicket[] {
+  if (!fs.existsSync(ABORTED_DIR)) return [];
+  const out: AbortTicket[] = [];
+  for (const f of fs.readdirSync(ABORTED_DIR)) {
+    if (!f.endsWith('.md')) continue;
+    try {
+      const content = fs.readFileSync(path.join(ABORTED_DIR, f), 'utf-8');
+      const { fm, body } = parseFrontmatter(content);
+      out.push({
+        sprintId: fm.sprint_id || f.replace(/\.md$/, ''),
+        fm,
+        body,
+        trigger: extractTicketSection(body, 'What Triggered the Abort'),
+      });
+    } catch {
+      /* skip unreadable ticket */
+    }
+  }
+  return out;
+}
+
+/** Next sequential PAT-NNN id, scanning patterns\. */
+function nextPatternId(): string {
+  let max = 0;
+  if (fs.existsSync(PATTERNS_DIR)) {
+    for (const f of fs.readdirSync(PATTERNS_DIR)) {
+      const m = /^PAT-(\d+)\.ya?ml$/i.exec(f);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (!Number.isNaN(n) && n > max) max = n;
+      }
+    }
+  }
+  return `PAT-${String(max + 1).padStart(3, '0')}`;
+}
+
+/** True if an existing pattern already covers (is a superset of) these source tickets. */
+function patternAlreadyExists(ticketIds: string[]): boolean {
+  if (!fs.existsSync(PATTERNS_DIR)) return false;
+  const want = new Set(ticketIds);
+  for (const f of fs.readdirSync(PATTERNS_DIR)) {
+    if (!f.endsWith('.yaml') && !f.endsWith('.yml')) continue;
+    try {
+      const pat = parseFlatYaml(fs.readFileSync(path.join(PATTERNS_DIR, f), 'utf-8'));
+      const src = new Set(parseFlowList(pat.source_tickets || '[]'));
+      let covered = true;
+      for (const id of want) {
+        if (!src.has(id)) {
+          covered = false;
+          break;
+        }
+      }
+      if (covered && src.size >= want.size) return true;
+    } catch {
+      /* skip unparseable pattern */
+    }
+  }
+  return false;
+}
+
+/** Best-effort log of a generated pattern to brain.db. FTS stays in sync via triggers; deduped by content_hash. */
+function logPatternToBrain(patternId: string, category: string, sourceTickets: string[]): boolean {
+  let db: WritableBrainDB | null = null;
+  try {
+    const Database = _require('better-sqlite3') as new (p: string, o?: object) => WritableBrainDB;
+    db = new Database(BRAIN_DB_PATH, { fileMustExist: true });
+    const content =
+      `AUTONOMIC Gate 3: pattern ${patternId} generated from ${sourceTickets.length} abort ` +
+      `tickets (category: ${category}). Source tickets: ${sourceTickets.join(', ')}.`;
+    const hash = createHash('sha256').update(content).digest('hex');
+    const dup = db.prepare('SELECT 1 FROM observations WHERE tenant_id = ? AND content_hash = ? LIMIT 1').get(BRAIN_TENANT, hash);
+    if (dup) return false;
+    const id = `pat_${patternId}_${Date.now()}`;
+    db.prepare(
+      'INSERT INTO observations (id, tenant_id, content, source, tags, status, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(id, BRAIN_TENANT, content, 'sprint_abort', JSON.stringify(['autonomic', 'pattern', category]), 'active', hash);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* ignore close failure */
+    }
+  }
+}
+
+/** ISO date YYYY-MM-DD for pattern files. */
+function isoDate(now: Date): string {
+  return todayStamp(now).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+}
+
+/**
+ * Detect a >=3 cluster sharing abort category + similar trigger text; if found and not
+ * already captured, write a PAT-NNN.yaml and log it to brain.db. Returns the new pattern id.
+ */
+function maybeGeneratePattern(category: string, current: AbortTicket, allTickets: AbortTicket[]): string | null {
+  if (!category || category === 'unknown') return null;
+  const sameCat = allTickets.filter((t) => (t.fm.abort_reason_category || '') === category);
+  if (sameCat.length < PATTERN_THRESHOLD) return null;
+
+  const seed = tokenSet(current.trigger);
+  const cluster = sameCat.filter(
+    (t) => t.sprintId === current.sprintId || jaccard(seed, tokenSet(t.trigger)) >= TRIGGER_SIM_THRESHOLD,
+  );
+  if (cluster.length < PATTERN_THRESHOLD) return null;
+
+  const ids = Array.from(new Set(cluster.map((t) => t.sprintId))).sort();
+  if (patternAlreadyExists(ids)) return null;
+
+  const autoFix = AUTO_FIXABLE_CATEGORIES.has(category);
+  const patternId = nextPatternId();
+  const check = autoFix
+    ? `Auto-fix sprints prone to ${category} aborts (${SUGGESTED_FIX_BY_CATEGORY[category] || 'auto'}) before firing.`
+    : `Flag sprints prone to ${category} aborts as Tier 3 / escalate; not auto-fixable.`;
+
+  const lines = [
+    `pattern_id: ${patternId}`,
+    `trigger_condition: ${yamlScalar(`sprint likely to abort with category ${category} (cluster of ${ids.length})`)}`,
+    `source_tickets: ${yamlList(ids)}`,
+    'description: >',
+    `  Auto-generated by Gate 3 from ${ids.length} abort tickets sharing category "${category}"`,
+    '  with similar abort triggers. Review and refine generated_check as needed.',
+    `generated_check: ${yamlScalar(check)}`,
+    `auto_fix: ${autoFix}`,
+    `date_created: ${isoDate(new Date())}`,
+    'effectiveness_score: null',
+    '',
+  ];
+
+  if (!fs.existsSync(PATTERNS_DIR)) fs.mkdirSync(PATTERNS_DIR, { recursive: true });
+  fs.writeFileSync(path.join(PATTERNS_DIR, `${patternId}.yaml`), lines.join('\n'), 'utf-8');
+  logPatternToBrain(patternId, category, ids);
+  return patternId;
+}
+
+/** If a re-queue for this parent already exists in pending\, return its id (idempotency guard). */
+function existingRequeueFor(parentSprintId: string): string | null {
+  if (!fs.existsSync(PENDING_DIR)) return null;
+  for (const f of fs.readdirSync(PENDING_DIR)) {
+    if (!f.endsWith('.md')) continue;
+    try {
+      const { fm } = parseFrontmatter(fs.readFileSync(path.join(PENDING_DIR, f), 'utf-8'));
+      if ((fm.parent_sprint || '') === parentSprintId) return fm.sprint_id || f.replace(/\.md$/, '');
+    } catch {
+      /* skip */
+    }
+  }
+  return null;
+}
+
+interface FixResult {
+  strategy: string | null;
+  body: string | null;
+  note: string;
+}
+
+/** Best-effort brain.db context pull for missing_context injection. */
+function recallContextForInjection(sprintText: string): string {
+  const query = buildBrainFtsQuery(sprintText.slice(0, 240));
+  if (!query) return '';
+  let db: BrainDBLike | null = null;
+  try {
+    const Database = _require('better-sqlite3') as new (p: string, o?: object) => BrainDBLike;
+    db = new Database(BRAIN_DB_PATH, { readonly: true, fileMustExist: true });
+    const rows = db
+      .prepare(
+        `SELECT o.content AS content
+         FROM observations o
+         JOIN observations_fts fts ON o.rowid = fts.rowid
+         WHERE o.tenant_id = ? AND o.status = 'active' AND observations_fts MATCH ?
+         ORDER BY fts.rank LIMIT 3`,
+      )
+      .all(BRAIN_TENANT, query) as { content: string }[];
+    return rows.map((r) => `- ${(r.content || '').slice(0, 200).replace(/\s+/g, ' ').trim()}`).join('\n');
+  } catch {
+    return '';
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Compute the corrected sprint body for an auto-fixable category. body=null means unfixable. */
+function computeFix(category: string, originalBody: string): FixResult {
+  if (category === 'missing_file') {
+    let body = originalBody;
+    const corrections: string[] = [];
+    for (const p of extractWindowsPaths(originalBody)) {
+      if (fs.existsSync(p)) continue;
+      const candidates = findFileByName(path.basename(p));
+      if (candidates.length === 1) {
+        body = body.split(p).join(candidates[0]);
+        corrections.push(`${p} -> ${candidates[0]}`);
+      }
+    }
+    if (!corrections.length) return { strategy: null, body: null, note: 'no uniquely-resolvable missing file found' };
+    return { strategy: `path_correction: ${corrections.join('; ')}`, body, note: corrections.join('; ') };
+  }
+
+  if (category === 'missing_dependency') {
+    const inject = [
+      '',
+      '## AUTO-FIX (dep_install)',
+      'A required dependency was missing on the prior run. Before the failing task, install',
+      'dependencies for the target project (Node: `npm install --include=dev`; Python:',
+      '`pip install --break-system-packages <pkg>`) and re-verify availability.',
+      '',
+    ].join('\n');
+    return { strategy: 'dep_install: install step injected', body: `${originalBody.trimEnd()}\n${inject}`, note: 'install step injected' };
+  }
+
+  if (category === 'missing_context') {
+    const ctx = recallContextForInjection(originalBody);
+    const inject = ['', '## AUTO-FIX (context_injection)', ctx || 'No brain.db context found; review manually.', ''].join('\n');
+    return { strategy: 'context_injection: brain.db context injected', body: `${originalBody.trimEnd()}\n${inject}`, note: 'context injected' };
+  }
+
+  if (category === 'environment_error') {
+    const inject = [
+      '',
+      '## AUTO-FIX (branch_correction)',
+      'Prior run hit an environment/branch error. Verify the correct git branch is checked out',
+      'and the working tree is clean before executing.',
+      '',
+    ].join('\n');
+    return { strategy: 'branch_correction: branch verification injected', body: `${originalBody.trimEnd()}\n${inject}`, note: 'branch verification injected' };
+  }
+
+  if (category === 'scope_ambiguity') {
+    const inject = [
+      '',
+      '## AUTO-FIX (scope_decomposition)',
+      'Prior run exceeded single-session scope. Execute one TASK block per session; commit and',
+      're-queue the remainder as a child sprint.',
+      '',
+    ].join('\n');
+    return { strategy: 'scope_decomposition: decomposition guidance injected', body: `${originalBody.trimEnd()}\n${inject}`, note: 'decomposition guidance injected' };
+  }
+
+  return { strategy: null, body: null, note: 'category not auto-fixable' };
+}
+
+/** Write a corrected sprint into pending\ with incremented retry_count + parent reference. Returns new id. */
+function requeueFixedSprint(parentSprintId: string, fixedBody: string): string {
+  const originalPath = path.join(PENDING_DIR, `${parentSprintId}.md`);
+  let project = 'unknown';
+  let title = parentSprintId;
+  let priority = 'P1';
+  let source = 'manual';
+  let model = 'sonnet';
+  let tier = 2;
+  let confidence = 0.5;
+  let retryCount = 0;
+  let maxRetries = MAX_RETRIES;
+  let dependencies: string[] = [];
+  let tags: string[] = [];
+
+  if (fs.existsSync(originalPath)) {
+    const { fm } = parseFrontmatter(fs.readFileSync(originalPath, 'utf-8'));
+    project = fm.project || project;
+    title = fm.title || title;
+    priority = fm.priority || priority;
+    source = fm.source || source;
+    model = fm.model_preference || model;
+    tier = Number(fm.tier) || tier;
+    confidence = Number(fm.confidence) || confidence;
+    retryCount = Number(fm.retry_count) || 0;
+    maxRetries = Number(fm.max_retries) || MAX_RETRIES;
+    dependencies = parseFlowList(fm.dependencies || '[]');
+    tags = parseFlowList(fm.tags || '[]');
+  }
+
+  const now = new Date();
+  if (!fs.existsSync(PENDING_DIR)) fs.mkdirSync(PENDING_DIR, { recursive: true });
+  const newId = nextSprintId(todayStamp(now));
+
+  const frontmatter = buildFrontmatter({
+    sprint_id: newId,
+    project,
+    title,
+    tier,
+    confidence,
+    priority,
+    status: 'pending',
+    queued_at: now.toISOString(),
+    started_at: null,
+    completed_at: null,
+    source,
+    dependencies,
+    model_preference: model,
+    retry_count: retryCount + 1,
+    max_retries: maxRetries,
+    parent_sprint: parentSprintId,
+    tags,
+  });
+
+  fs.writeFileSync(path.join(PENDING_DIR, `${newId}.md`), `${frontmatter}\n\n${fixedBody.trim()}\n`, 'utf-8');
+  return newId;
+}
+
+/** Add `analyzed: true` to an abort ticket's frontmatter (idempotent). */
+function markTicketAnalyzed(ticketPath: string): void {
+  try {
+    const content = fs.readFileSync(ticketPath, 'utf-8').replace(/\r\n/g, '\n');
+    if (/^analyzed:\s*true\s*$/m.test(content)) return;
+    if (!content.startsWith('---')) return;
+    const end = content.indexOf('\n---', 3);
+    if (end === -1) return;
+    const updated = `${content.slice(0, end)}\nanalyzed: true${content.slice(end)}`;
+    fs.writeFileSync(ticketPath, updated, 'utf-8');
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Core analysis for one abort ticket: classify, (maybe) generate a pattern, (maybe) auto-fix + re-queue. */
+function analyzeTicketCore(sprintId: string): Record<string, unknown> {
+  const ticketPath = path.join(ABORTED_DIR, `${sprintId}.md`);
+  if (!fs.existsSync(ticketPath)) return { error: `Abort ticket not found: ${ticketPath}` };
+
+  const { fm, body } = parseFrontmatter(fs.readFileSync(ticketPath, 'utf-8'));
+  const category = fm.abort_reason_category || 'unknown';
+  const retryCount = Number(fm.retry_count) || 0;
+  const ticketBlocks = fm.auto_fixable === 'false' || fm.suggested_fix_category === 'none';
+  const categoryFixable = AUTO_FIXABLE_CATEGORIES.has(category);
+  const autoFixable = categoryFixable && !ticketBlocks;
+
+  // Pattern learning (runs regardless of fixability; dedup-guarded).
+  const allTickets = readAbortTickets();
+  const current: AbortTicket = { sprintId, fm, body, trigger: extractTicketSection(body, 'What Triggered the Abort') };
+  const newPattern = maybeGeneratePattern(category, current, allTickets);
+  const patternGenerated = !!newPattern;
+
+  const base = {
+    sprint_id: sprintId,
+    abort_reason_category: category,
+    pattern_generated: patternGenerated,
+    ...(newPattern ? { pattern_id: newPattern } : {}),
+  };
+
+  // Escalate: not auto-fixable, or retry cap reached.
+  if (!autoFixable || retryCount >= MAX_RETRIES) {
+    const reason = !categoryFixable
+      ? `category '${category}' is not auto-fixable`
+      : ticketBlocks
+        ? "ticket marked auto_fixable:false / suggested_fix_category:none"
+        : `retry cap reached (${retryCount}/${MAX_RETRIES})`;
+    return { ...base, auto_fixable: autoFixable, fix_strategy: null, fix_applied: false, requeued_sprint_id: null, escalated: true, escalation_reason: reason };
+  }
+
+  // Idempotency: never double-requeue the same parent.
+  const already = existingRequeueFor(sprintId);
+  if (already) {
+    return { ...base, auto_fixable: true, fix_strategy: 'already_requeued', fix_applied: false, requeued_sprint_id: already, escalated: false };
+  }
+
+  const originalPath = path.join(PENDING_DIR, `${sprintId}.md`);
+  const originalBody = fs.existsSync(originalPath) ? parseFrontmatter(fs.readFileSync(originalPath, 'utf-8')).body : body;
+  const fix = computeFix(category, originalBody);
+  if (!fix.body) {
+    return { ...base, auto_fixable: true, fix_strategy: null, fix_applied: false, requeued_sprint_id: null, escalated: true, escalation_reason: fix.note };
+  }
+
+  const requeuedId = requeueFixedSprint(sprintId, fix.body);
+  return { ...base, auto_fixable: true, fix_strategy: fix.strategy, fix_applied: true, requeued_sprint_id: requeuedId, escalated: false };
+}
+
+// ==========================================================================
+// TOOL DEFINITIONS (4 tools)
 // ==========================================================================
 
 export const autonomicTools: Tool[] = [
@@ -550,6 +993,42 @@ export const autonomicTools: Tool[] = [
         sprint_id: { type: 'string', description: 'The sprint_id to preflight (reads from pending\\)' },
       },
       required: ['sprint_id'],
+    },
+  },
+  {
+    name: 'analyze_ticket',
+    description:
+      'Analyze one AUTONOMIC abort ticket (aborted\\{sprint_id}.md) and drive the Gate 3 self-healing ' +
+      'loop. Classifies by abort_reason_category, honoring an explicit auto_fixable:false / ' +
+      'suggested_fix_category:none in the ticket (the aborting agent\'s assessment) over the category ' +
+      'default. Auto-fixable categories (missing_file, missing_dependency, missing_context, ' +
+      'scope_ambiguity, environment_error) within the retry cap are fixed and re-queued directly to ' +
+      'pending\\ with parent_sprint set and retry_count incremented; non-fixable tickets or those at ' +
+      'the retry cap (2) escalate. Also runs pattern learning: a cluster of 3+ same-category aborts ' +
+      'with similar triggers generates a PAT-NNN.yaml and logs it to brain.db. Returns { sprint_id, ' +
+      'abort_reason_category, auto_fixable, fix_strategy, fix_applied, requeued_sprint_id, ' +
+      'pattern_generated, escalated }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sprint_id: { type: 'string', description: 'The aborted sprint_id to analyze (reads aborted\\{sprint_id}.md)' },
+      },
+      required: ['sprint_id'],
+    },
+  },
+  {
+    name: 'analyze_all_tickets',
+    description:
+      'Batch-run the ticket analyzer over every unprocessed abort ticket in aborted\\ (those without ' +
+      'analyzed:true in frontmatter). Each ticket is classified, auto-fixed + re-queued where eligible, ' +
+      'and contributes to pattern learning. Processed tickets are marked analyzed:true to avoid ' +
+      're-processing. Pass dry_run:true to classify only (no fixes, re-queues, patterns, or marking). ' +
+      'Returns { analyzed, auto_fixed, requeued, escalated, patterns_generated, results }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dry_run: { type: 'boolean', description: 'Classify only — no writes (default false)' },
+      },
     },
   },
 ];
@@ -737,6 +1216,65 @@ export function createAutonomicHandlers(): Record<string, (input: Record<string,
         warnings,
         auto_fixed: autoFixed,
       };
+    },
+
+    analyze_ticket: async (input) => {
+      const sprintId = input.sprint_id as string;
+      if (!sprintId) return { error: 'analyze_ticket requires sprint_id' };
+      return analyzeTicketCore(sprintId);
+    },
+
+    analyze_all_tickets: async (input) => {
+      const dryRun = input.dry_run === true;
+      if (!fs.existsSync(ABORTED_DIR)) {
+        return { analyzed: 0, auto_fixed: 0, requeued: 0, escalated: 0, patterns_generated: 0, results: [] };
+      }
+
+      const files = fs.readdirSync(ABORTED_DIR).filter((f) => f.endsWith('.md'));
+      let analyzed = 0;
+      let autoFixed = 0;
+      let requeued = 0;
+      let escalated = 0;
+      let patternsGenerated = 0;
+      const results: unknown[] = [];
+
+      for (const f of files) {
+        const ticketPath = path.join(ABORTED_DIR, f);
+        let fm: Record<string, string>;
+        try {
+          fm = parseFrontmatter(fs.readFileSync(ticketPath, 'utf-8')).fm;
+        } catch {
+          continue;
+        }
+        if (fm.analyzed === 'true') continue; // already processed
+        const sprintId = fm.sprint_id || f.replace(/\.md$/, '');
+
+        if (dryRun) {
+          const category = fm.abort_reason_category || 'unknown';
+          const ticketBlocks = fm.auto_fixable === 'false' || fm.suggested_fix_category === 'none';
+          const wouldFix =
+            AUTO_FIXABLE_CATEGORIES.has(category) && !ticketBlocks && (Number(fm.retry_count) || 0) < MAX_RETRIES;
+          analyzed++;
+          if (wouldFix) autoFixed++;
+          else escalated++;
+          results.push({ sprint_id: sprintId, abort_reason_category: category, would_auto_fix: wouldFix });
+          continue;
+        }
+
+        const res = analyzeTicketCore(sprintId) as Record<string, unknown>;
+        analyzed++;
+        if (res.pattern_generated) patternsGenerated++;
+        if (res.fix_applied && res.requeued_sprint_id) {
+          autoFixed++;
+          requeued++;
+        } else {
+          escalated++;
+        }
+        results.push(res);
+        markTicketAnalyzed(ticketPath);
+      }
+
+      return { analyzed, auto_fixed: autoFixed, requeued, escalated, patterns_generated: patternsGenerated, results };
     },
   };
 }

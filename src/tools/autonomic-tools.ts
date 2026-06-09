@@ -1034,6 +1034,34 @@ export const autonomicTools: Tool[] = [
       },
     },
   },
+  {
+    name: 'validate_sprint',
+    description:
+      'Post-sprint validation gate: run AFTER a sprint completes, BEFORE commit. Reads the pre-flight ' +
+      'baseline (active\\{sprint_id}_baseline.json), re-scans the same source files with eos_quick_scan ' +
+      'to compute a quality delta, runs the Yuma health gates (tsc --noEmit, lint, tests) on the target ' +
+      'project, and optionally runs a WHETSTONE adversarial challenge on the changed files (skipped ' +
+      'gracefully if unavailable). Produces a commit recommendation: "commit" (Yuma passes + EoS stable ' +
+      'or improved), "commit_with_warnings" (Yuma passes but EoS dropped <5 pts, or EoS could not be ' +
+      'assessed), or "reject" (any Yuma gate fails, or EoS dropped >5 pts). Missing baselines, ' +
+      'unresolved project dirs, and absent WHETSTONE are all handled gracefully and reported in ' +
+      'warnings. Returns { sprint_id, passed, eos_delta, yuma_result, whetstone_result, recommendation, ... }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sprint_id: { type: 'string', description: 'The completed sprint_id to validate (reads its baseline from active\\)' },
+        project: { type: 'string', description: 'Optional project name (informational, echoed back)' },
+        project_dir: {
+          type: 'string',
+          description:
+            'Optional explicit project directory. Use for spaced-path projects (e.g. KERNL at ' +
+            '"D:\\Projects\\Project Mind\\kernl-mcp") whose paths the baseline could not auto-resolve.',
+        },
+        run_whetstone: { type: 'boolean', description: 'Run the optional WHETSTONE challenge (default true; skipped gracefully if unavailable)' },
+      },
+      required: ['sprint_id'],
+    },
+  },
 ];
 
 // ==========================================================================
@@ -1276,6 +1304,183 @@ async function capturePreflightBaseline(sprintId: string, body: string, startedA
     lint,
     aegis,
   };
+}
+
+// ==========================================================================
+// POST-SPRINT VALIDATION (validate_sprint: EoS delta + Yuma gates + WHETSTONE)
+// ==========================================================================
+// Runs AFTER a sprint completes, BEFORE commit. Unlike the pre-flight baseline
+// (budget-capped for throughput), validation is allowed generous per-command
+// timeouts — correctness of the commit gate matters more than its latency.
+//
+// Yuma note: the AUTONOMIC architecture names "Yuma five_gate_check" for the
+// tsc/lint/test health gate, but KERNL's actual `five_gate_check` tool is a
+// code-SEARCH discovery tool (git/code/ui/backlog/patterns match counts), not a
+// health runner — confirmed and resolved during AUT-20260604-006 (David, Option
+// 1: Yuma health = tsc --noEmit + lint + tests). validate_sprint therefore runs
+// the real gates via runHealthCommand, reusing the exact pre-flight tsc/lint
+// logic and adding a tests gate, rather than calling the discovery tool.
+
+const VALIDATE_TSC_TIMEOUT_MS = 90_000;
+const VALIDATE_LINT_TIMEOUT_MS = 90_000;
+const VALIDATE_TEST_TIMEOUT_MS = 180_000;
+const EOS_DROP_REJECT_THRESHOLD = 5; // average points: a drop strictly greater than this rejects
+const NPM_TEST_PLACEHOLDER = 'no test specified'; // npm's default scripts.test stub
+
+interface YumaGate {
+  ran: boolean;
+  pass: boolean;
+  reason?: string;
+  error_count?: number;
+  command?: string;
+}
+interface YumaResult {
+  tsc: boolean;
+  lint: boolean;
+  tests: boolean;
+  overall: boolean;
+}
+
+/** Read scripts.{key} from a project's package.json, '' if absent/unreadable. */
+function readPkgScript(projectDir: string, key: string): string {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf-8')) as {
+      scripts?: Record<string, string>;
+    };
+    return (pkg.scripts || {})[key] || '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Run the Yuma health gates (tsc --noEmit, lint, tests) on a resolved project
+ * directory. A gate that is legitimately not applicable (no tsconfig, no lint
+ * script, no/placeholder test script) is recorded as ran:false, pass:true — the
+ * absence of a gate is not a failure. If the project directory could not be
+ * resolved at all, every gate is ran:false, pass:false (inconclusive — the gate
+ * could not validate anything, so it must not green-light a commit).
+ */
+function runYuma(projectDir: string | null): { result: YumaResult; detail: { tsc: YumaGate; lint: YumaGate; tests: YumaGate } } {
+  if (!projectDir) {
+    const inconclusive: YumaGate = { ran: false, pass: false, reason: 'project directory could not be resolved' };
+    return {
+      result: { tsc: false, lint: false, tests: false, overall: false },
+      detail: { tsc: { ...inconclusive }, lint: { ...inconclusive }, tests: { ...inconclusive } },
+    };
+  }
+
+  const na = (reason: string): YumaGate => ({ ran: false, pass: true, reason });
+  const fromHealth = (h: HealthBaseline): YumaGate => ({
+    ran: true,
+    pass: h.status === 'clean',
+    ...(h.timed_out ? { reason: 'timed out' } : h.status === 'unknown' ? { reason: h.skipped_reason } : {}),
+    ...(typeof h.error_count === 'number' ? { error_count: h.error_count } : {}),
+    ...(h.command ? { command: h.command } : {}),
+  });
+
+  // tsc --noEmit (only if a tsconfig.json exists)
+  const tsc: YumaGate = !fs.existsSync(path.join(projectDir, 'tsconfig.json'))
+    ? na('no tsconfig.json (non-TS project)')
+    : fromHealth(runHealthCommand('npx', ['tsc', '--noEmit'], projectDir, VALIDATE_TSC_TIMEOUT_MS));
+
+  // lint (only if a distinct lint script exists; dedupe when it mirrors tsc)
+  const lintScript = readPkgScript(projectDir, 'lint');
+  let lint: YumaGate;
+  if (!lintScript) lint = na('no lint script');
+  else if (lintScript.trim() === 'tsc --noEmit') lint = { ran: false, pass: tsc.pass, reason: 'duplicates tsc --noEmit' };
+  else lint = fromHealth(runHealthCommand('npm', ['run', 'lint'], projectDir, VALIDATE_LINT_TIMEOUT_MS));
+
+  // tests (only if a real test script exists — skip npm's default placeholder)
+  const testScript = readPkgScript(projectDir, 'test');
+  const tests: YumaGate =
+    !testScript || testScript.includes(NPM_TEST_PLACEHOLDER)
+      ? na('no test script')
+      : fromHealth(runHealthCommand('npm', ['test'], projectDir, VALIDATE_TEST_TIMEOUT_MS));
+
+  const overall = tsc.pass && lint.pass && tests.pass;
+  return { result: { tsc: tsc.pass, lint: lint.pass, tests: tests.pass, overall }, detail: { tsc, lint, tests } };
+}
+
+/**
+ * Best-effort WHETSTONE adversarial challenge on changed files. WHETSTONE is
+ * optional (per sprint CRITICAL CONSTRAINTS — "skip gracefully if unavailable")
+ * and is not part of this KERNL source tree's build, so this probes for a
+ * forward-compatible handler module via a runtime-computed specifier (kept
+ * non-literal so tsc does not attempt to resolve it). Returns null whenever
+ * WHETSTONE cannot be invoked — never throws.
+ */
+async function tryWhetstone(files: string[], run: boolean): Promise<{ challenged: boolean; findings: string[] } | null> {
+  if (!run || !files.length) return null;
+  try {
+    const spec = ['..', 'tools', 'whetstone-tools.js'].join('/'); // non-literal: tsc skips resolution
+    const mod = (await import(spec)) as {
+      createWhetstoneHandlers?: () => Record<string, (input: Record<string, unknown>) => Promise<unknown>>;
+    };
+    const handler = mod.createWhetstoneHandlers?.().whetstone_challenge;
+    if (typeof handler !== 'function') return null;
+    const res = (await handler({ files })) as { findings?: unknown };
+    const findings = Array.isArray(res?.findings) ? (res.findings as unknown[]).map((f) => String(f)) : [];
+    return { challenged: true, findings };
+  } catch {
+    return null;
+  }
+}
+
+/** Locate a sprint's body markdown across the queue dirs (completed -> active -> pending). */
+function locateSprintBody(sprintId: string): string | null {
+  for (const dir of [COMPLETED_DIR, ACTIVE_DIR, PENDING_DIR]) {
+    const p = path.join(dir, `${sprintId}.md`);
+    try {
+      if (fs.existsSync(p)) return fs.readFileSync(p, 'utf-8');
+    } catch {
+      /* unreadable — try next */
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve the target project directory for validation, in priority order:
+ *   1. explicit input.project_dir (lets spaced-path projects like KERNL validate)
+ *   2. baseline.project_dir (captured at pre-flight)
+ *   3. nearest package.json above a real path referenced in the sprint body
+ *   4. nearest package.json above a baseline-scored source file
+ * Returns null when none resolve (validation is then honestly inconclusive).
+ */
+function resolveValidationProjectDir(opts: {
+  explicit?: string;
+  baselineDir?: string | null;
+  body?: string | null;
+  scoreFiles: string[];
+}): string | null {
+  const { explicit, baselineDir, body, scoreFiles } = opts;
+  if (explicit && fs.existsSync(explicit)) return explicit;
+  if (baselineDir && fs.existsSync(baselineDir)) return baselineDir;
+  if (body) {
+    const files = extractWindowsPaths(body).filter((p) => {
+      try {
+        return fs.existsSync(p) && fs.statSync(p).isFile();
+      } catch {
+        return false;
+      }
+    });
+    if (files.length) {
+      const d = findUp(path.dirname(path.resolve(files[0])), 'package.json');
+      if (d) return d;
+    }
+  }
+  for (const f of scoreFiles) {
+    try {
+      if (fs.existsSync(f)) {
+        const d = findUp(path.dirname(path.resolve(f)), 'package.json');
+        if (d) return d;
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  return null;
 }
 
 // ==========================================================================
@@ -1536,6 +1741,115 @@ export function createAutonomicHandlers(): Record<string, (input: Record<string,
       }
 
       return { analyzed, auto_fixed: autoFixed, requeued, escalated, patterns_generated: patternsGenerated, results };
+    },
+
+    validate_sprint: async (input) => {
+      const sprintId = input.sprint_id as string;
+      if (!sprintId) return { error: 'validate_sprint requires sprint_id' };
+
+      const project = (input.project as string) || '';
+      const explicitDir = (input.project_dir as string) || '';
+      const runWhetstone = input.run_whetstone !== false; // default true
+      const warnings: string[] = [];
+
+      // 1. Load the pre-flight baseline (best-effort; absence is non-fatal).
+      const baselineFile = path.join(ACTIVE_DIR, `${sprintId}_baseline.json`);
+      let baseline: PreflightBaseline | null = null;
+      if (fs.existsSync(baselineFile)) {
+        try {
+          baseline = JSON.parse(fs.readFileSync(baselineFile, 'utf-8')) as PreflightBaseline;
+        } catch (e) {
+          warnings.push(`Baseline present but unreadable: ${(e as Error).message}`);
+        }
+      } else {
+        warnings.push(`No baseline at ${baselineFile} — EoS delta cannot be computed`);
+      }
+
+      const beforeScores: Record<string, number> = baseline?.eos?.scores || {};
+      const filesToScan = Object.keys(beforeScores);
+
+      // 2. Resolve the target project directory (explicit > baseline > body > scored files).
+      const body = locateSprintBody(sprintId);
+      const projectDir = resolveValidationProjectDir({
+        explicit: explicitDir || undefined,
+        baselineDir: baseline?.project_dir ?? null,
+        body,
+        scoreFiles: filesToScan,
+      });
+      if (!projectDir) warnings.push('Could not resolve target project directory — Yuma gates inconclusive');
+
+      // 3. EoS after-scan on the SAME files the baseline scored, then compute delta.
+      let eosAfter: Record<string, number> = {};
+      let filesDegraded: string[] = [];
+      let eosDrop = 0;
+      let eosAssessed = false;
+      if (filesToScan.length) {
+        try {
+          const r = (await createEosHandlers().eos_quick_scan({
+            files: filesToScan,
+            ...(project ? { project } : {}),
+          })) as { scores?: Record<string, number>; errors?: string[] };
+          eosAfter = r.scores || {};
+          if (Array.isArray(r.errors) && r.errors.length) warnings.push(`EoS after-scan reported ${r.errors.length} error(s)`);
+          const common = filesToScan.filter((f) => f in eosAfter);
+          filesDegraded = common.filter((f) => eosAfter[f] < beforeScores[f]);
+          if (common.length) {
+            const beforeAvg = common.reduce((a, f) => a + beforeScores[f], 0) / common.length;
+            const afterAvg = common.reduce((a, f) => a + eosAfter[f], 0) / common.length;
+            eosDrop = Math.round((beforeAvg - afterAvg) * 100) / 100;
+            eosAssessed = true;
+          } else {
+            warnings.push('No overlap between baseline and after-scan files — EoS delta not assessed');
+          }
+        } catch (e) {
+          warnings.push(`EoS after-scan failed: ${(e as Error).message}`);
+        }
+      } else if (baseline) {
+        warnings.push('Baseline recorded no EoS scores — EoS delta not assessed (likely spaced-path project)');
+      }
+
+      const eos_delta = { before: beforeScores, after: eosAfter, files_degraded: filesDegraded };
+
+      // 4. Yuma health gates (tsc / lint / tests).
+      const yuma = runYuma(projectDir);
+
+      // 5. WHETSTONE adversarial challenge (optional, graceful).
+      const whetstone_result = await tryWhetstone(filesToScan, runWhetstone);
+      if (runWhetstone && whetstone_result === null) {
+        warnings.push('WHETSTONE unavailable in this build — adversarial check skipped');
+      } else if (whetstone_result && whetstone_result.findings.length) {
+        warnings.push(`WHETSTONE returned ${whetstone_result.findings.length} finding(s)`);
+      }
+
+      // 6. Recommendation — strictly per sprint logic (Yuma + EoS delta only):
+      //    reject  : any Yuma gate fails OR EoS dropped > 5 points
+      //    commit  : Yuma passes AND EoS assessed stable-or-improved (drop <= 0)
+      //    warnings: Yuma passes AND (EoS dropped <5 pts OR EoS not assessable)
+      const yumaPass = yuma.result.overall;
+      const eosDropMajor = eosAssessed && eosDrop > EOS_DROP_REJECT_THRESHOLD;
+      const eosStableOrImproved = eosAssessed && eosDrop <= 0;
+      let recommendation: 'commit' | 'commit_with_warnings' | 'reject';
+      if (!yumaPass || eosDropMajor) recommendation = 'reject';
+      else if (eosStableOrImproved) recommendation = 'commit';
+      else recommendation = 'commit_with_warnings';
+      const passed = recommendation !== 'reject';
+
+      return {
+        sprint_id: sprintId,
+        passed,
+        eos_delta,
+        yuma_result: yuma.result,
+        whetstone_result,
+        recommendation,
+        // ---- diagnostics (additive; not part of the core contract) ----
+        eos_drop: eosAssessed ? eosDrop : null,
+        eos_assessed: eosAssessed,
+        yuma_detail: yuma.detail,
+        project_dir: projectDir,
+        baseline_found: baseline !== null,
+        warnings,
+        ...(project ? { project } : {}),
+      };
     },
   };
 }

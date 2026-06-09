@@ -438,6 +438,41 @@ function spreadActivation(
     const prev = activations.get(k) ?? 0;
     activations.set(k, Math.max(prev, v));
   }
+
+  // PROMETHEUS-W4: Community glow — weakly activate all entities in the same
+  // stable community as each activated entity. activation × 0.3.
+  // Graceful skip if entity_communities table doesn't exist.
+  try {
+    const hasCommunityTable = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_communities'"
+    ).all().length > 0;
+    if (hasCommunityTable) {
+      const getCommunity = db.prepare(
+        'SELECT community_id FROM entity_communities WHERE entity_id = ? AND stable = 1'
+      );
+      const getCommunityMembers = db.prepare(
+        'SELECT entity_id FROM entity_communities WHERE community_id = ? AND stable = 1'
+      );
+      const communityGlow = new Map<string, number>();
+      for (const [entId, activation] of activations) {
+        const row = getCommunity.get(entId) as { community_id: number } | undefined;
+        if (!row) continue;
+        const members = getCommunityMembers.all(row.community_id) as { entity_id: string }[];
+        const glowLevel = activation * 0.3;
+        if (glowLevel < 0.01) continue;
+        for (const m of members) {
+          if (m.entity_id === entId) continue; // skip self
+          const existing = communityGlow.get(m.entity_id) ?? 0;
+          communityGlow.set(m.entity_id, Math.max(existing, glowLevel));
+        }
+      }
+      for (const [k, v] of communityGlow) {
+        const prev = activations.get(k) ?? 0;
+        activations.set(k, Math.min(1, Math.max(prev, v)));
+      }
+    }
+  } catch { /* community table missing or error — skip gracefully */ }
+
   return activations;
 }
 
@@ -587,6 +622,18 @@ export const brainTools: Tool[] = [
         limit: { type: 'number', description: 'Max results (default 10)' },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'brain_recall_community',
+    description: 'PROMETHEUS-W4 community-scoped recall. Looks up an entity\'s stable community (from label propagation clustering), finds all entities in that community, returns their observations sorted by recency. A structural discovery tool — "what\'s related to X at the graph level?"',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', description: 'Entity name to find community for' },
+        limit: { type: 'number', description: 'Max observations to return (default 20)' },
+      },
+      required: ['entity'],
     },
   },
   {
@@ -1435,6 +1482,90 @@ async function handleRecallSpread(input: {
   };
 }
 
+/** PROMETHEUS-W4 brain_recall_community: community-scoped recall.
+ *  Finds the entity's stable community via entity_communities table,
+ *  gathers all co-community entities, returns their observations. */
+async function handleRecallCommunity(input: { entity: string; limit?: number }): Promise<object> {
+  const db = getBrainDb();
+  if (!db) return { entity: input.entity, results: [], error: 'brain.db unavailable' };
+  const _limit = input.limit ?? 20;
+
+  // Check if entity_communities table exists
+  let tableExists = false;
+  try {
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entity_communities'").all();
+    tableExists = tables.length > 0;
+  } catch { /* */ }
+  if (!tableExists) return { entity: input.entity, results: [], error: 'entity_communities table not found — run NIGHTSHIFT Pass 16 first' };
+
+  // Resolve entity name to ID
+  const entityRow = db.prepare(
+    "SELECT id FROM entities WHERE tenant_id = ? AND (name = ? OR name LIKE ? || '%') AND status = 'active' ORDER BY name = ? DESC LIMIT 1"
+  ).get(TENANT_ID, input.entity, input.entity, input.entity) as { id: string } | undefined;
+  if (!entityRow) return { entity: input.entity, results: [], error: 'Entity not found: ' + input.entity };
+
+  // Look up stable community
+  const communityRow = db.prepare(
+    'SELECT community_id, consecutive_assignments, stable FROM entity_communities WHERE entity_id = ?'
+  ).get(entityRow.id) as { community_id: number; consecutive_assignments: number; stable: number } | undefined;
+  if (!communityRow) return { entity: input.entity, entity_id: entityRow.id, results: [], error: 'Entity has no community assignment' };
+  if (!communityRow.stable) return { entity: input.entity, entity_id: entityRow.id, community_id: communityRow.community_id, stable: false, results: [], note: 'Community assignment not yet stable (consecutive=' + communityRow.consecutive_assignments + ', need 3)' };
+
+  // Find all entities in the same community
+  const communityMembers = db.prepare(
+    'SELECT ec.entity_id, e.name FROM entity_communities ec JOIN entities e ON e.id = ec.entity_id WHERE ec.community_id = ? AND ec.stable = 1'
+  ).all(communityRow.community_id) as { entity_id: string; name: string }[];
+
+  // Get community metadata
+  const meta = db.prepare('SELECT label, member_count, density FROM community_metadata WHERE community_id = ?').get(communityRow.community_id) as { label: string; member_count: number; density: number } | undefined;
+
+  // Fetch observations for all community members
+  const memberIds = communityMembers.map(m => m.entity_id);
+  if (memberIds.length === 0) return { entity: input.entity, community_id: communityRow.community_id, results: [], members: [] };
+  const placeholders = memberIds.map(() => '?').join(',');
+
+  let hasQuality = false;
+  try {
+    const cols = db.prepare('PRAGMA table_info(observations)').all() as { name: string }[];
+    hasQuality = cols.some(c => c.name === 'quality_score');
+  } catch { /* */ }
+
+  const qSelect = hasQuality ? ', o.quality_score' : '';
+  const observations = db.prepare(
+    `SELECT o.id, o.content, o.entity_id, e.name AS entity_name, o.source, o.created_at${qSelect}
+     FROM observations o LEFT JOIN entities e ON e.id = o.entity_id
+     WHERE o.tenant_id = ? AND o.status = 'active' AND o.entity_id IN (${placeholders})
+     ORDER BY o.created_at DESC LIMIT ?`
+  ).all(TENANT_ID, ...memberIds, _limit) as { id: string; content: string; entity_id: string; entity_name: string; source: string; created_at: string; quality_score?: number }[];
+
+  // Track retrieval
+  try {
+    const trackStmt = db.prepare("UPDATE observations SET last_accessed_at=datetime('now'), access_count=COALESCE(access_count,0)+1 WHERE id=?");
+    for (const o of observations) trackStmt.run(o.id);
+  } catch { /* best-effort */ }
+
+  // Boost activation for community members
+  for (const m of communityMembers) boostActivation(m.entity_id, SESSION_BOOST_RECALL * 0.5);
+
+  return {
+    entity: input.entity,
+    entity_id: entityRow.id,
+    community_id: communityRow.community_id,
+    stable: true,
+    community_metadata: meta ?? null,
+    members: communityMembers.map(m => m.name),
+    results: observations.map((o, i) => ({
+      id: o.id,
+      content: o.content.length > 300 ? o.content.slice(0, 300) + '...' : o.content,
+      entity_name: o.entity_name,
+      source: o.source,
+      created_at: o.created_at,
+      quality_score: (o as any).quality_score ?? null,
+      rank: i + 1,
+    })),
+  };
+}
+
 export function createBrainHandlers(): Record<string, (input: Record<string, unknown>) => Promise<unknown>> {
   // PROMETHEUS-W2: wrap each handler in tickActivation() so the session
   // activation map decays once per brain_* tool call.
@@ -1445,6 +1576,7 @@ export function createBrainHandlers(): Record<string, (input: Record<string, unk
     brain_recall:        tick((i) => handleRecall(i as { query: string; scope?: string; limit?: number })),
     brain_recall_graph:  tick((i) => handleRecallGraph(i as { query: string; scope?: string; limit?: number })),
     brain_recall_spread: tick((i) => handleRecallSpread(i as { query: string; depth?: number; dampening?: number; limit?: number })),
+    brain_recall_community: tick((i) => handleRecallCommunity(i as { entity: string; limit?: number })),
     brain_remember:      tick((i) => handleRemember(i as { content: string; entity?: string; source?: string })),
     brain_status:        tick((i) => Promise.resolve(handleStatus(i as { project: string }))),
     brain_feedback:      tick((i) => handleFeedback(i as { observation_id: string; rating: 'helpful'|'unhelpful'|'critical'; context?: string })),

@@ -30,7 +30,12 @@ const createMockDb = () => ({
 describe('gitTools', () => {
   describe('tool definitions', () => {
     it('should export correct number of tools', () => {
-      expect(gitTools).toHaveLength(2);
+      expect(gitTools).toHaveLength(4);
+    });
+
+    it('should define dev_branch and merge_to_main tools', () => {
+      expect(gitTools.find(tool => tool.name === 'dev_branch')).toBeDefined();
+      expect(gitTools.find(tool => tool.name === 'merge_to_main')).toBeDefined();
     });
 
     it('should define smart_commit tool correctly', () => {
@@ -447,4 +452,16 @@ describe('createGitHandlers', () => {
           if (command.includes('git commit')) {
             throw new Error('commit failed: permission denied');
           }
-          return '
+          return 'success';
+        });
+
+        const result = await handlers.smart_commit(input);
+
+        expect(result).toMatchObject({
+          error: 'Commit failed',
+          details: 'commit failed: permission denied'
+        });
+      });
+    });
+  });
+});

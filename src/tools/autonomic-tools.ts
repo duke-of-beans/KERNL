@@ -121,12 +121,16 @@ function todayStamp(now: Date): string {
   return `${y}${m}${d}`;
 }
 
-/** Next sequential sprint id for the given date stamp, scanning pending/. */
+/** Next sequential sprint id for the given date stamp, scanning ALL queue dirs (pending/active/completed/aborted) to guarantee lifecycle-wide ID uniqueness. */
 function nextSprintId(stamp: string): string {
   let maxSeq = 0;
   const prefix = `AUT-${stamp}-`;
-  if (fs.existsSync(PENDING_DIR)) {
-    for (const f of fs.readdirSync(PENDING_DIR)) {
+  // Scan EVERY queue directory, not just pending/. An ID must be unique across
+  // the whole sprint lifecycle: emptying pending/ must not let a fresh sprint
+  // reuse an ID still present in active/, completed/, or aborted/.
+  for (const dir of [PENDING_DIR, ACTIVE_DIR, COMPLETED_DIR, ABORTED_DIR]) {
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) {
       if (f.startsWith(prefix) && f.endsWith('.md')) {
         const seq = parseInt(f.slice(prefix.length, f.length - 3), 10);
         if (!Number.isNaN(seq) && seq > maxSeq) maxSeq = seq;

@@ -2,10 +2,10 @@
 
 **Status:** production
 **Version:** 3.0.0 (KERNL-BRAIN-02 v3.0 + Cognitive Organism)
-**Last Updated: 2026-05-29 (PROMETHEUS-CLEANUP — CHECK constraint expansion, vec query hardening)
+**Last Updated: 2026-06-04 (AUT-20260603-001 — queue_sprint + preflight_check tools)
 **Yuma Health:** 65/100 ORANGE (30 specs, 9 pass) (auto — Yuma)
-**Code Health:** 12/100 (23 critical, 358 warnings) (auto — EoS)
-**Completion:** 83% (auto — 20 done, 4 pending)
+**Code Health:** 12/100 (23 critical, 359 warnings) (auto — EoS)
+**Completion:** 86% (auto — 25 done, 4 pending)
 **Tests:** failing (exit 1)
 
 ---
@@ -49,6 +49,7 @@ GitHub: https://github.com/duke-of-beans/KERNL
 - [x] PROMETHEUS-W2: Spreading-activation recall -- in-memory session activation map (0.2 boost/recall, 0.3/status, 0.05 decay/call), spreadActivation BFS through brain_edges with structural_isomorphism 1.2x boost, brain_recall_spread tool with quality-aware spread_score (2026-05-28)
 - [x] PROMETHEUS-W4: Community detection -- label propagation clustering, community-scoped recall, community-aware brain_recall_community tool (2026-05-28)
 - [x] PROMETHEUS-CLEANUP: Tech debt -- expanded observations.source CHECK (11 new subsystem values), hardened all vec_distance_cosine queries with typeof/length guards, FTS5 rebuild (2026-05-29)
+- [x] AUTONOMIC Phase 1.3: queue_sprint + preflight_check tools (src/tools/autonomic-tools.ts), Phase 9 server registration -- staged sprint queueing with inline confidence scoring + pre-flight validation (AUT-20260603-001, 2026-06-04)
 
 ## Open Work
 

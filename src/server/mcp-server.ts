@@ -40,6 +40,8 @@ import { utilityTools, createUtilityHandlers } from '../tools/utility-tools.js';
 import { researchTools, createResearchHandlers } from '../tools/research-tools.js';
 // Phase 8: Brain Intelligence (brain.db live context + graph recall)
 import { brainTools, createBrainHandlers } from '../tools/brain-tools.js';
+// Phase 9: AUTONOMIC sprint queue (queue_sprint + preflight_check)
+import { autonomicTools, createAutonomicHandlers } from '../tools/autonomic-tools.js';
 
 export class KernlMCPServer {
   private server: Server;
@@ -97,6 +99,9 @@ export class KernlMCPServer {
     // Phase 8: Brain Intelligence
     register(brainTools, createBrainHandlers() as Record<string, (input: unknown) => Promise<unknown>>);
 
+    // Phase 9: AUTONOMIC sprint queue
+    register(autonomicTools, createAutonomicHandlers() as Record<string, (input: unknown) => Promise<unknown>>);
+
     // Version tool
     this.tools.set('kernl_version', {
       name: 'kernl_version',
@@ -109,7 +114,7 @@ export class KernlMCPServer {
       toolCount: this.tools.size,
       categories: ['Session','Project','Filesystem','Intelligence','Patterns','Gates',
                    'Process','Search','Files','Config','Chrome','ShadowDocs','Git',
-                   'Backlog','Testing','Utility','Research','Brain'],
+                   'Backlog','Testing','Utility','Research','Brain','Autonomic'],
     }));
 
     console.error(`[KERNL] Registered ${this.tools.size} tools (v5.1.0 — Brain layer active)`);

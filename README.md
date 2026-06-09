@@ -125,7 +125,7 @@ The entire tool suite has been rebuilt from documentation after an accidental dr
 
 **Protocol-Driven Quality** - Every tool has explicit input validation, comprehensive error handling, and typed interfaces. No mocks, no stubs, no placeholders—production-quality code or nothing.
 
-## Tool Categories (128 Total)
+## Tool Categories (134 Total)
 
 - **Session Management** (5 tools): Checkpoints, recovery, state management
 - **Project Operations** (6 tools): Register, list, update, delete, status
@@ -141,6 +141,7 @@ The entire tool suite has been rebuilt from documentation after an accidental dr
 - **Shadow Docs** (4 tools): Parallel documentation system
 - **Git Tools** (3 tools): Smart commits, session packaging, staged versioning
 - **Backlog** (5 tools): EPIC management, sprint tracking
+- **AUTONOMIC** (6 tools): Sprint queue, scoring, pre-flight, validation, abort analysis, backlog conversion — enhanced backends for the [AUTONOMIC protocol](https://github.com/duke-of-beans/autonomic)
 - **Testing / YUMA** (12 tools): Test generation, contracts, chains, baselines, precommit, health scores
 - **Brain / Memory** (7 tools): brain_briefing, brain_recall (RRF), brain_recall_graph, brain_remember, brain_status, brain_feedback, brain_invalidate
 - **Adversarial / WHETSTONE** (1 tool): Epistemic challenge + code mutation testing via Anthropic API
@@ -150,7 +151,7 @@ The entire tool suite has been rebuilt from documentation after an accidental dr
 
 ## Current Status
 
-**Production v6.0.0** - Active daily use across multiple development projects. 128 tools across 19 categories. Nine-system cognitive architecture operational (brain.db memory, WHETSTONE adversarial, IMPRINT reflection, YUMA testing, plus NIGHTSHIFT maintenance running 13 daily passes).
+**Production v6.0.0** - Active daily use across multiple development projects. 134 tools across 20 categories. Eleven-system cognitive architecture operational (including [AUTONOMIC](https://github.com/duke-of-beans/autonomic) sprint execution) (brain.db memory, WHETSTONE adversarial, IMPRINT reflection, YUMA testing, plus NIGHTSHIFT maintenance running 13 daily passes).
 
 **YUMA Testing Subsystem** - Multi-tier quality gates deployed to production projects. Static analysis (route sync, voice compliance, security), behavioral contracts (API patterns, status codes), terminology compliance (legal risk scanning), dependency graphs, evidence chain integrity. Example: TRACE project runs 17 tests / 84 checks pre-deploy.
 

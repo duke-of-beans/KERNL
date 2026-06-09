@@ -1,18 +1,26 @@
 /**
- * KERNL MCP - AUTONOMIC Sprint Queue Tools
+ * KERNL MCP - AUTONOMIC Sprint Tools (Enhanced Backend)
  *
- * score_sprint    — classify a sprint prompt (tier, confidence, flags, scoring
- *                   breakdown) using keyword/path/destructive checks plus learned
- *                   failure-pattern matching and a best-effort brain.db history signal.
- * queue_sprint    — stage a sprint prompt into D:\Dev\SPRINT_QUEUE\pending with
- *                   scored YAML frontmatter (sprint_id, tier, confidence). Uses
- *                   score_sprint internally.
- * preflight_check — validate a pending sprint before execution: path existence
- *                   (+ auto-fix), git cleanliness, failure-pattern match, deps.
+ * These tools are KERNL's enhanced implementation of the AUTONOMIC protocol.
+ * AUTONOMIC is a standalone protocol, CLI, and plugin for autonomous sprint
+ * execution by AI agents: https://github.com/duke-of-beans/autonomic
  *
- * Net-new connective tissue for the AUTONOMIC system.
- * Spec:     D:\Meta\SPRINT_AUTOMATION_ARCHITECTURE.md
- * Template: D:\Dev\TEMPLATES\AUTONOMIC_SPRINT_TEMPLATE.md
+ * KERNL enhances AUTONOMIC's gates with:
+ *   - brain.db pattern matching for smarter sprint scoring
+ *   - EoS (Eye of Sauron) quality baselines for pre-flight validation
+ *   - WHETSTONE adversarial probes for post-sprint validation
+ *   - Learned failure patterns from the brain.db graph
+ *
+ * Tools:
+ *   score_sprint    — classify sprint (tier, confidence) with brain.db history
+ *   queue_sprint    — stage sprint with scored YAML frontmatter
+ *   preflight_check — validate before execution (paths, git, patterns, deps)
+ *   validate_sprint — post-sprint quality gates (EoS delta, Yuma, WHETSTONE)
+ *   analyze_ticket  — abort ticket analysis with Gate 3 learning bridge
+ *   backlog_to_sprint — convert backlog items to sprint prompts
+ *
+ * Protocol:  https://github.com/duke-of-beans/autonomic/blob/main/docs/protocol.md
+ * Local spec: D:\Meta\SPRINT_AUTOMATION_ARCHITECTURE.md
  */
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';

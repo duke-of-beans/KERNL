@@ -42,6 +42,8 @@ import { researchTools, createResearchHandlers } from '../tools/research-tools.j
 import { brainTools, createBrainHandlers } from '../tools/brain-tools.js';
 // Phase 9: AUTONOMIC sprint queue (queue_sprint + preflight_check)
 import { autonomicTools, createAutonomicHandlers } from '../tools/autonomic-tools.js';
+// Phase 9: Eye of Sauron quality scan (eos_quick_scan)
+import { eosTools, createEosHandlers } from '../tools/eos-tools.js';
 
 export class KernlMCPServer {
   private server: Server;
@@ -101,6 +103,9 @@ export class KernlMCPServer {
 
     // Phase 9: AUTONOMIC sprint queue
     register(autonomicTools, createAutonomicHandlers() as Record<string, (input: unknown) => Promise<unknown>>);
+
+    // Phase 9: Eye of Sauron quality scan
+    register(eosTools, createEosHandlers() as Record<string, (input: unknown) => Promise<unknown>>);
 
     // Version tool
     this.tools.set('kernl_version', {

@@ -49,6 +49,20 @@ const DESTRUCTIVE_KEYWORDS = ['delete', 'drop', 'remove', 'overwrite'];
 
 // Roots searched when auto-resolving a moved file by basename.
 const SEARCH_ROOTS = ['D:\\Projects', 'D:\\Work', 'D:\\Dev', 'D:\\Research', 'D:\\Meta'];
+
+// Known KERNL tool names for preflight tool-reference validation.
+// If a sprint references a tool not in this set, preflight warns (not blocks —
+// the tool may exist in a different MCP server or be yet-to-be-built).
+const KNOWN_TOOLS = new Set([
+  'score_sprint', 'queue_sprint', 'preflight_check', 'analyze_ticket',
+  'analyze_all_tickets', 'validate_sprint', 'eos_quick_scan',
+  'brain_recall', 'brain_remember', 'brain_recall_graph', 'brain_recall_spread',
+  'brain_recall_community', 'brain_status', 'brain_briefing', 'brain_feedback',
+  'brain_invalidate', 'whetstone_challenge', 'imprint_reflect',
+  'imprint_set_intention', 'imprint_resolve_intention',
+  'five_gate_check', 'smart_commit', 'test_run', 'test_health',
+  'shadow_doc_update', 'project_context_scan',
+]);
 const SEARCH_EXCLUDES = new Set(['node_modules', '.git', 'dist', '.next', 'build', 'coverage', '.cache']);
 const SEARCH_MAX_VISITS = 20000;
 
@@ -76,6 +90,27 @@ function extractWindowsPaths(text: string): string[] {
   for (const m of text.match(unquoted) || []) out.push(m);
   const cleaned = out.map((m) => m.replace(/[.,;:)\]}'"]+$/, '').trim());
   return Array.from(new Set(cleaned.filter((p) => p.length > 3)));
+}
+
+/** Extract KERNL tool names referenced in sprint text. Matches underscore_separated
+ *  identifiers that look like tool names (score_sprint, eos_quick_scan, etc.).
+ *  Returns distinct tool names found. */
+function extractToolReferences(text: string): string[] {
+  const toolPattern = /\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b/g;
+  const found = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = toolPattern.exec(text)) !== null) {
+    const candidate = m[1];
+    // Only flag names that look like known or plausible KERNL tool names
+    // (underscore-separated, matching tool naming convention)
+    if (KNOWN_TOOLS.has(candidate) || candidate.endsWith('_check') ||
+        candidate.endsWith('_sprint') || candidate.endsWith('_scan') ||
+        candidate.endsWith('_ticket') || candidate.startsWith('brain_') ||
+        candidate.startsWith('eos_') || candidate.startsWith('imprint_')) {
+      found.add(candidate);
+    }
+  }
+  return Array.from(found);
 }
 
 /** Local-date stamp YYYYMMDD. */
@@ -1672,6 +1707,21 @@ export function createAutonomicHandlers(): Record<string, (input: Record<string,
       for (const dep of deps) {
         if (!fs.existsSync(path.join(COMPLETED_DIR, `${dep}.md`))) {
           blockers.push(`Dependency not completed: ${dep}`);
+        }
+      }
+
+      // 4b. Tool reference validation — warn if sprint references tools not in KNOWN_TOOLS
+      const referencedTools = extractToolReferences(body);
+      for (const tool of referencedTools) {
+        if (!KNOWN_TOOLS.has(tool)) {
+          warnings.push(`Referenced tool '${tool}' not in known KERNL tool registry`);
+        }
+      }
+      if (referencedTools.length) {
+        const known = referencedTools.filter((t) => KNOWN_TOOLS.has(t));
+        const unknown = referencedTools.filter((t) => !KNOWN_TOOLS.has(t));
+        if (unknown.length) {
+          warnings.push(`Tool references: ${known.length} known, ${unknown.length} unknown [${unknown.join(', ')}]`);
         }
       }
 

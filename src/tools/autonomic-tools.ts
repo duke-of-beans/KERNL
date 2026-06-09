@@ -56,10 +56,25 @@ const SEARCH_MAX_VISITS = 20000;
 // HELPERS
 // ==========================================================================
 
-/** Extract distinct Windows absolute paths from text, trimming trailing punctuation. */
+/** Extract distinct Windows absolute paths from text, including paths with spaces.
+ *  Pass 1 (quoted): captures a path verbatim between matching quotes, e.g.
+ *  "D:\Projects\Project Mind\file.ts".
+ *  Pass 2 (unquoted): a drive root followed by directory segments that may contain
+ *  spaces but must end in a backslash, then a space-free final segment — so
+ *  "D:\Projects\Project Mind\kernl-mcp is the file" yields "D:\Projects\Project Mind\kernl-mcp".
+ *  ':' is excluded from segment characters so a second drive letter starts a NEW path
+ *  rather than being bridged into the previous one. Trailing punctuation is trimmed. */
 function extractWindowsPaths(text: string): string[] {
-  const matches = text.match(/[A-Za-z]:\\[^\s"'<>|]+/g) || [];
-  const cleaned = matches.map((m) => m.replace(/[.,;:)\]}'"]+$/, ''));
+  const out: string[] = [];
+  // Pass 1 — quoted paths: take the content between single/double quotes verbatim.
+  const quoted = /["']([A-Za-z]:\\[^"']*)["']/g;
+  let qm: RegExpExecArray | null;
+  while ((qm = quoted.exec(text)) !== null) out.push(qm[1]);
+  // Pass 2 — unquoted paths: directory segments may bridge spaces only when a
+  // backslash continues the path; the final segment is space-free.
+  const unquoted = /[A-Za-z]:\\(?:[^\s\\"'<>|:]+(?: +[^\s\\"'<>|:]+)*\\)*[^\s\\"'<>|:]*/g;
+  for (const m of text.match(unquoted) || []) out.push(m);
+  const cleaned = out.map((m) => m.replace(/[.,;:)\]}'"]+$/, '').trim());
   return Array.from(new Set(cleaned.filter((p) => p.length > 3)));
 }
 

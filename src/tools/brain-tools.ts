@@ -898,12 +898,16 @@ async function handleRecallGraph(input: { query: string; scope?: string; limit?:
  *   nightshift_prometheus — NIGHTSHIFT Pass 13 (created_by: nightshift-prometheus exists)
  *   nightshift_eos      — NIGHTSHIFT EoS pass (created_by: nightshift-eos exists)
  *   dopamine_hit        — brain_briefing dopamine hits
+ *   sprint_abort        — autonomic abort tickets (autonomic-tools.ts ~L384) [added AUT-20260604-013, 2026-06-04]
  *
  * Active source values in DB (all within current CHECK): 19 distinct values.
  * created_by values in DB: brain_remember, continuity-brain-01, imprint,
  *   nightshift-eos, nightshift-lantern, nightshift-prometheus, nightshift-treg, whetstone
  *
- * Resolution: Task 2 rebuilds observations table with expanded CHECK.
+ * Resolution: PROMETHEUS-CLEANUP rebuilt observations with expanded CHECK; AUT-20260604-013
+ *   further expanded it to include 'sprint_abort' (live DB table rebuild, rowid-preserving,
+ *   FTS rebuilt, 2849 rows verified). The CHECK constraint lives ONLY in the live D:\Meta\brain.db
+ *   (no schema.sql/migration file defines observations) — this comment is its source-of-truth record.
  */
 async function handleRemember(input: { content: string; entity?: string; source?: string }): Promise<object> {
   const db = getBrainDb();

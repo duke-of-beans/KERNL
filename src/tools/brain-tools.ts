@@ -750,7 +750,7 @@ async function handleRecall(input: { query: string; scope?: string; limit?: numb
     try {
       const emb = await generateEmbedding('search_query: ' + input.query);
       const queryJson = JSON.stringify(Array.from(emb));
-      let sql = `SELECT o.id, o.content, o.entity_id, o.source, o.created_at, (1.0-(vec_distance_cosine(o.embedding,vec_f32(?))/2.0)) AS similarity FROM observations o WHERE o.tenant_id=? AND o.embedding IS NOT NULL AND o.status='active'`;
+      let sql = `SELECT o.id, o.content, o.entity_id, o.source, o.created_at, (1.0-(vec_distance_cosine(o.embedding,vec_f32(?))/2.0)) AS similarity FROM observations o WHERE o.tenant_id=? AND o.embedding IS NOT NULL AND typeof(o.embedding)='blob' AND length(o.embedding)=3072 AND o.status='active'`;
       const params: unknown[] = [queryJson, TENANT_ID];
       if (scopeType === 'project') { sql += ` AND o.entity_id=(SELECT id FROM entities WHERE tenant_id=? AND (slug=? OR name LIKE ?) LIMIT 1)`; params.push(TENANT_ID, scopeValue, `%${scopeValue}%`); }
       sql += ` ORDER BY similarity DESC LIMIT ?`; params.push(seedLimit);
@@ -875,6 +875,36 @@ async function handleRecallGraph(input: { query: string; scope?: string; limit?:
   return { ...seedResult, graph_neighbors: graphNeighbors, graph_observations: graphObs, graph_summary: graphSummary };
 }
 
+/**
+ * PROMETHEUS-CLEANUP Task 1 — CHECK constraint audit (2026-05-28)
+ *
+ * Current CHECK on observations.source allows:
+ *   session, signal, manual, git, sms, import, markdown_index,
+ *   throwbak_era, throwbak_person, throwbak_wc, throwbak_intl,
+ *   throwbak_decision, throwbak_event, throwbak_thread,
+ *   throwbak_creative, throwbak_library,
+ *   greglite_scan, greglite_health,
+ *   fpp_synthesis, fpp_chapter, external_context, fpp_finding
+ *
+ * Values MISSING but needed by subsystems:
+ *   imprint_hypothesis  — handleImprint ΔI hypothesis persistence (line ~1160)
+ *   imprint_next_move   — handleImprint ΔI next_move persistence
+ *   imprint_state       — handleImprint ΔI state persistence
+ *   imprint_delta       — future imprint delta writes
+ *   imprint_intention   — future imprint intention writes
+ *   whetstone_challenge — whetstone_challenge tool writes
+ *   nightshift_lantern  — NIGHTSHIFT Pass 12 (created_by: nightshift-lantern exists)
+ *   nightshift_treg     — NIGHTSHIFT Pass 11 (created_by: nightshift-treg exists)
+ *   nightshift_prometheus — NIGHTSHIFT Pass 13 (created_by: nightshift-prometheus exists)
+ *   nightshift_eos      — NIGHTSHIFT EoS pass (created_by: nightshift-eos exists)
+ *   dopamine_hit        — brain_briefing dopamine hits
+ *
+ * Active source values in DB (all within current CHECK): 19 distinct values.
+ * created_by values in DB: brain_remember, continuity-brain-01, imprint,
+ *   nightshift-eos, nightshift-lantern, nightshift-prometheus, nightshift-treg, whetstone
+ *
+ * Resolution: Task 2 rebuilds observations table with expanded CHECK.
+ */
 async function handleRemember(input: { content: string; entity?: string; source?: string }): Promise<object> {
   const db = getBrainDb();
   if (!db) return { error: 'brain.db unavailable' };
@@ -1051,7 +1081,7 @@ async function handleWhetstone(input: { position: string; context?: string; cali
       const emb = await generateEmbedding('search_query: ' + input.position);
       const queryJson = JSON.stringify(Array.from(emb));
       const related = db.prepare(
-        `SELECT content FROM observations WHERE tenant_id=? AND status='active' AND embedding IS NOT NULL ORDER BY vec_distance_cosine(embedding, vec_f32(?)) LIMIT 3`
+        `SELECT content FROM observations WHERE tenant_id=? AND status='active' AND embedding IS NOT NULL AND typeof(embedding)='blob' AND length(embedding)=3072 ORDER BY vec_distance_cosine(embedding, vec_f32(?)) LIMIT 3`
       ).all(TENANT_ID, queryJson) as { content: string }[];
       if (related.length > 0) {
         brainContext = '\n\nRelated observations from memory:\n' + related.map(r => '- ' + r.content.slice(0, 200)).join('\n');

@@ -2,7 +2,7 @@
 
 **Status:** production
 **Version:** 3.0.0 (KERNL-BRAIN-02 v3.0 + Cognitive Organism)
-**Last Updated: 2026-05-28 (PROMETHEUS-W2 — spreading activation recall, session warmth tracking, brain_recall_spread tool)
+**Last Updated: 2026-05-29 (PROMETHEUS-CLEANUP — CHECK constraint expansion, vec query hardening)
 **Yuma Health:** 65/100 ORANGE (30 specs, 9 pass) (auto — Yuma)
 **Code Health:** 12/100 (23 critical, 358 warnings) (auto — EoS)
 **Completion:** 83% (auto — 20 done, 4 pending)
@@ -47,6 +47,8 @@ GitHub: https://github.com/duke-of-beans/KERNL
 - [x] PROMETHEUS-W3: IMPRINT delta-I (forward intention) tracking -- intentions table, imprint_set_intention + imprint_resolve_intention tools, brain_briefing surfacing, imprint_reflect lifecycle (2026-05-23)
 - [x] PROMETHEUS-W1: Observation quality engine -- computeQualityScore, write-time quality, RRF quality re-weight (2026-05-28)
 - [x] PROMETHEUS-W2: Spreading-activation recall -- in-memory session activation map (0.2 boost/recall, 0.3/status, 0.05 decay/call), spreadActivation BFS through brain_edges with structural_isomorphism 1.2x boost, brain_recall_spread tool with quality-aware spread_score (2026-05-28)
+- [x] PROMETHEUS-W4: Community detection -- label propagation clustering, community-scoped recall, community-aware brain_recall_community tool (2026-05-28)
+- [x] PROMETHEUS-CLEANUP: Tech debt -- expanded observations.source CHECK (11 new subsystem values), hardened all vec_distance_cosine queries with typeof/length guards, FTS5 rebuild (2026-05-29)
 
 ## Open Work
 

@@ -18,9 +18,11 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
+import * as http from 'node:http';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { createEosHandlers } from './eos-tools.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -32,6 +34,7 @@ const QUEUE_DIR = 'D:\\Dev\\SPRINT_QUEUE';
 const PENDING_DIR = path.join(QUEUE_DIR, 'pending');
 const COMPLETED_DIR = path.join(QUEUE_DIR, 'completed');
 const PATTERNS_DIR = path.join(QUEUE_DIR, 'patterns');
+const ACTIVE_DIR = path.join(QUEUE_DIR, 'active');
 
 // brain.db (read-only, best-effort) for historical scoring signals.
 const BRAIN_DB_PATH = 'D:\\Meta\\brain.db';
@@ -1034,6 +1037,248 @@ export const autonomicTools: Tool[] = [
 ];
 
 // ==========================================================================
+// PRE-FLIGHT BASELINE (Gate 1: EoS quality + tsc/lint health + AEGIS resources)
+// ==========================================================================
+// Budget-capped, best-effort snapshot captured during preflight_check. Pre-flight
+// establishes a FAST baseline for post-sprint delta, not a comprehensive health
+// report — a 15s wall clock protects pipeline throughput. Order (per design):
+// AEGIS (~1s independent) -> EoS (referenced files) -> tsc --noEmit -> lint.
+// Whatever the clock allows is captured; the rest is recorded as skipped (honest
+// partial baseline). No check ever blocks the sprint.
+
+const PREFLIGHT_BUDGET_MS = 15_000;
+const AEGIS_URL = 'http://localhost:7474/sprint-metrics';
+const AEGIS_TIMEOUT_MS = 1_000;
+const AEGIS_CPU_WARN = 90;
+const AEGIS_MEM_WARN = 85;
+const BASELINE_MIN_SLICE_MS = 1_500; // don't start a check with less than this left
+const BASELINE_CODE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py']);
+
+interface BaselineCheck {
+  ran: boolean;
+  skipped_reason?: string;
+}
+interface EosBaseline extends BaselineCheck {
+  average?: number;
+  files_scanned?: number;
+  findings_count?: number;
+  scores?: Record<string, number>;
+}
+interface HealthBaseline extends BaselineCheck {
+  status?: 'clean' | 'errors' | 'unknown';
+  error_count?: number;
+  command?: string;
+  timed_out?: boolean;
+}
+interface AegisBaseline extends BaselineCheck {
+  available: boolean;
+  cpu?: number | null;
+  memory?: number | null;
+  warning?: string;
+  raw?: unknown;
+}
+interface PreflightBaseline {
+  sprint_id: string;
+  captured_at: string;
+  budget_ms: number;
+  elapsed_ms: number;
+  project_dir: string | null;
+  eos: EosBaseline;
+  tsc: HealthBaseline;
+  lint: HealthBaseline;
+  aegis: AegisBaseline;
+}
+
+/** Walk up from startDir to find the nearest ancestor containing `filename`. */
+function findUp(startDir: string, filename: string): string | null {
+  let cur = startDir;
+  for (let i = 0; i < 16; i++) {
+    if (fs.existsSync(path.join(cur, filename))) return cur;
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return null;
+}
+
+/**
+ * Best-effort AEGIS resource snapshot. Never throws; resolves available:false on
+ * any failure (offline, timeout, unparseable). Parses cpu/memory under several
+ * common field names and flags a warning above the configured thresholds.
+ */
+function fetchAegisMetrics(timeoutMs: number): Promise<AegisBaseline> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v: AegisBaseline) => {
+      if (!settled) {
+        settled = true;
+        resolve(v);
+      }
+    };
+    try {
+      const req = http.get(AEGIS_URL, (res) => {
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => {
+          try {
+            const j = JSON.parse(data) as Record<string, unknown>;
+            const num = (...keys: string[]): number | null => {
+              for (const k of keys) {
+                const v = j[k];
+                if (typeof v === 'number') return v;
+              }
+              return null;
+            };
+            const cpu = num('cpu', 'cpu_percent', 'cpuPercent', 'cpu_usage', 'cpuUsage');
+            const memory = num('memory', 'memory_percent', 'memoryPercent', 'mem', 'mem_percent', 'memUsage');
+            let warning: string | undefined;
+            if ((cpu !== null && cpu > AEGIS_CPU_WARN) || (memory !== null && memory > AEGIS_MEM_WARN)) {
+              warning = `AEGIS high resource usage: cpu=${cpu ?? 'n/a'}%, memory=${memory ?? 'n/a'}%`;
+            }
+            done({ ran: true, available: true, cpu, memory, ...(warning ? { warning } : {}), raw: j });
+          } catch {
+            done({ ran: true, available: false, skipped_reason: 'unparseable AEGIS response' });
+          }
+        });
+      });
+      req.on('error', () => done({ ran: true, available: false, skipped_reason: 'AEGIS endpoint unavailable' }));
+      req.setTimeout(timeoutMs, () => {
+        req.destroy();
+        done({ ran: true, available: false, skipped_reason: 'AEGIS request timed out' });
+      });
+    } catch (e) {
+      done({ ran: true, available: false, skipped_reason: `AEGIS request error: ${(e as Error).message}` });
+    }
+  });
+}
+
+/** Run a health command (tsc/lint) synchronously, counting `error TS####` lines. */
+function runHealthCommand(cmd: string, args: string[], cwd: string, timeoutMs: number): HealthBaseline {
+  const command = `${cmd} ${args.join(' ')}`;
+  const res = spawnSync(cmd, args, {
+    cwd,
+    shell: true,
+    encoding: 'utf-8',
+    timeout: timeoutMs,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (res.error) {
+    const code = (res.error as NodeJS.ErrnoException).code;
+    if (code === 'ETIMEDOUT') {
+      return { ran: true, status: 'unknown', command, timed_out: true, skipped_reason: `timed out after ${timeoutMs}ms` };
+    }
+    return { ran: true, status: 'unknown', command, skipped_reason: res.error.message };
+  }
+  const out = `${res.stdout || ''}\n${res.stderr || ''}`;
+  const errorCount = (out.match(/error TS\d+/g) || []).length;
+  const status: 'clean' | 'errors' = res.status === 0 && errorCount === 0 ? 'clean' : 'errors';
+  return { ran: true, status, error_count: errorCount, command };
+}
+
+/**
+ * Capture the budget-capped pre-flight baseline. `startedAt` is the preflight
+ * handler's start time so the whole check (incl. earlier path/git/pattern work)
+ * stays within PREFLIGHT_BUDGET_MS.
+ */
+async function capturePreflightBaseline(sprintId: string, body: string, startedAt: number): Promise<PreflightBaseline> {
+  const remaining = () => PREFLIGHT_BUDGET_MS - (Date.now() - startedAt);
+
+  // Referenced existing source files (EoS input).
+  const codeFiles = extractWindowsPaths(body).filter((p) => {
+    try {
+      return fs.existsSync(p) && fs.statSync(p).isFile() && BASELINE_CODE_EXTS.has(path.extname(p).toLowerCase());
+    } catch {
+      return false;
+    }
+  });
+
+  // Target project dir = nearest ancestor of the first code file holding package.json.
+  const anchorDir = codeFiles.length ? path.dirname(path.resolve(codeFiles[0])) : null;
+  const projectDir = anchorDir ? findUp(anchorDir, 'package.json') : null;
+
+  // --- AEGIS resource snapshot (independent, ~1s, never blocks) ---
+  let aegis: AegisBaseline;
+  try {
+    aegis = await fetchAegisMetrics(Math.min(AEGIS_TIMEOUT_MS, Math.max(200, remaining())));
+  } catch (e) {
+    aegis = { ran: true, available: false, skipped_reason: `AEGIS error: ${(e as Error).message}` };
+  }
+
+  // --- EoS quality scan on referenced files (first, fast) ---
+  let eos: EosBaseline;
+  if (!codeFiles.length) {
+    eos = { ran: false, skipped_reason: 'no referenced source files in sprint body' };
+  } else if (remaining() < BASELINE_MIN_SLICE_MS) {
+    eos = { ran: false, skipped_reason: `budget exhausted before EoS (${remaining()}ms left)` };
+  } else {
+    try {
+      const r = (await createEosHandlers().eos_quick_scan({ files: codeFiles })) as {
+        average?: number;
+        scores?: Record<string, number>;
+        findings?: unknown[];
+      };
+      const scores = r.scores || {};
+      eos = {
+        ran: true,
+        average: r.average ?? 0,
+        files_scanned: Object.keys(scores).length,
+        findings_count: Array.isArray(r.findings) ? r.findings.length : 0,
+        scores,
+      };
+    } catch (e) {
+      eos = { ran: false, skipped_reason: `EoS error: ${(e as Error).message}` };
+    }
+  }
+
+  // --- tsc --noEmit health (if a TS project + budget remains) ---
+  let tsc: HealthBaseline;
+  if (!projectDir) {
+    tsc = { ran: false, skipped_reason: 'no package.json found for target project' };
+  } else if (!fs.existsSync(path.join(projectDir, 'tsconfig.json'))) {
+    tsc = { ran: false, skipped_reason: 'no tsconfig.json in target project' };
+  } else if (remaining() < BASELINE_MIN_SLICE_MS) {
+    tsc = { ran: false, skipped_reason: `budget exhausted before tsc (${remaining()}ms left)` };
+  } else {
+    tsc = runHealthCommand('npx', ['tsc', '--noEmit'], projectDir, Math.max(1000, remaining() - 500));
+  }
+
+  // --- lint health (only if a DISTINCT lint script + budget remains) ---
+  let lint: HealthBaseline;
+  let lintScript = '';
+  if (projectDir) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf-8')) as {
+        scripts?: Record<string, string>;
+      };
+      lintScript = (pkg.scripts || {}).lint || '';
+    } catch {
+      /* ignore unreadable package.json */
+    }
+  }
+  if (!projectDir || !lintScript) {
+    lint = { ran: false, skipped_reason: 'no lint script in target project' };
+  } else if (lintScript.trim() === 'tsc --noEmit' && tsc.ran) {
+    lint = { ran: false, skipped_reason: 'lint duplicates tsc --noEmit (already captured)' };
+  } else if (remaining() < BASELINE_MIN_SLICE_MS) {
+    lint = { ran: false, skipped_reason: `budget exhausted before lint (${remaining()}ms left)` };
+  } else {
+    lint = runHealthCommand('npm', ['run', 'lint'], projectDir, Math.max(1000, remaining() - 300));
+  }
+
+  return {
+    sprint_id: sprintId,
+    captured_at: new Date().toISOString(),
+    budget_ms: PREFLIGHT_BUDGET_MS,
+    elapsed_ms: Date.now() - startedAt,
+    project_dir: projectDir,
+    eos,
+    tsc,
+    lint,
+    aegis,
+  };
+}
+
+// ==========================================================================
 // TOOL HANDLERS
 // ==========================================================================
 
@@ -1130,6 +1375,7 @@ export function createAutonomicHandlers(): Record<string, (input: Record<string,
       const sprintId = input.sprint_id as string;
       if (!sprintId) return { error: 'preflight_check requires sprint_id' };
 
+      const preflightStart = Date.now();
       const filePath = path.join(PENDING_DIR, `${sprintId}.md`);
       if (!fs.existsSync(filePath)) {
         return { error: `Sprint not found in pending: ${filePath}` };
@@ -1209,12 +1455,27 @@ export function createAutonomicHandlers(): Record<string, (input: Record<string,
         }
       }
 
+      // 5. Pre-flight baseline: EoS quality + tsc/lint health + AEGIS resources
+      //    (budget-capped, best-effort, non-blocking). Persisted for post-sprint delta.
+      const baseline = await capturePreflightBaseline(sprintId, body, preflightStart);
+      const baselineFile = path.join(ACTIVE_DIR, `${sprintId}_baseline.json`);
+      try {
+        if (!fs.existsSync(ACTIVE_DIR)) fs.mkdirSync(ACTIVE_DIR, { recursive: true });
+        fs.writeFileSync(baselineFile, JSON.stringify(baseline, null, 2), 'utf-8');
+      } catch (e) {
+        warnings.push(`Could not persist baseline JSON: ${(e as Error).message}`);
+      }
+      // AEGIS high-usage is a warning, never a blocker (per spec).
+      if (baseline.aegis.warning) warnings.push(baseline.aegis.warning);
+
       return {
         sprint_id: sprintId,
         pass: blockers.length === 0,
         blockers,
         warnings,
         auto_fixed: autoFixed,
+        baseline,
+        baseline_file: baselineFile,
       };
     },
 

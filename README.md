@@ -10,13 +10,13 @@
 
 ## The Problem
 
-AI-assisted development suffers from three catastrophic failure modes that cost hours of lost work:
+MCP-based development suffers from three catastrophic failure modes that cost hours of lost work:
 
-**The 8-Minute Death** - Claude Desktop crashes during long operations (efficiency mode throttling, memory limits), losing all architectural decisions and context built up over the session. You're left staring at a blank chat trying to remember what you discussed.
+**The 8-Minute Death** - Long-running sessions crash during complex operations (efficiency mode throttling, memory limits), losing all architectural decisions and context built up over the session.
 
-**The Bootstrap Tax** - Every new session requires 5-10 minutes manually restoring context: "We were working on X, decided Y because Z, next we need to..." This happens dozens of times per day.
+**The Bootstrap Tax** - Every new session requires 5-10 minutes manually restoring context. This happens dozens of times per day across multiple projects.
 
-**Isolated Learning** - Solutions discovered in one project stay trapped there. You solve the same problem three times across different codebases because there's no transfer mechanism.
+**Isolated Learning** - Solutions discovered in one project stay trapped there. The same problem gets solved independently across different codebases because there's no transfer mechanism.
 
 ## The Solution
 
@@ -34,17 +34,9 @@ KERNL provides aggressive session state management with automatic checkpointing 
 
 ## Why This Exists
 
-**The Progression:**
+Long-running MCP sessions accumulate significant state: architectural decisions, active file contexts, progress markers, and reasoning chains. When that state is lost to crashes, efficiency throttling, or session rotation, the recovery cost is measured in hours per incident.
 
-**Week 1-2:** Hit ceiling during complex refactors—Claude Desktop would crash 45 minutes in, losing all architectural discussions. Manual workaround: frantically copy-paste decisions into markdown files (forgot constantly, lost work anyway).
-
-**Week 3-4:** Built basic checkpoint save/restore. Crashed immediately—learned about race conditions the hard way. Added recovery detection with careful prompt engineering for natural UX.
-
-**Week 5-8:** Realized checkpointing wasn't enough—needed workspace management, semantic search, cross-project patterns. Expanded to 101 tools systematically.
-
-**January 14, 2026:** Accidentally deleted entire codebase during D:/ drive reorganization. Zero panic—had complete chat history with Claude documenting every decision.
-
-**January 14, 2026 (same day):** Rebuilt all 101 tools from chat history alone in 8 hours. This is the repository you're looking at. The fact that you're reading this README proves the system works.
+KERNL was built to solve this systematically. What started as a checkpoint/recovery system evolved into a full intelligence layer as each friction point was addressed: session persistence led to semantic search, which led to cross-project pattern transfer, which led to adversarial testing and reflection engines. Each tool exists because the problem was encountered and the solution was validated in production.
 
 ## Installation
 
@@ -107,25 +99,19 @@ KERNL:mark_complete({
 })
 ```
 
-## Development Journey
+## Design Decisions
 
-**Built with zero traditional coding background using systematic AI-native development methodology.**
+### Session Management
+State management isn't just "save state." It's understanding what state matters — architectural decisions outweigh file changes — and how to capture it without interrupting flow. Checkpoint frequency is aggressive (every 2-3 tool calls) because state loss compounds faster than checkpoint overhead.
 
-### Key Learnings
+### Crash Recovery
+Detection is non-intrusive (silent background check), recovery prompts feel natural, and the system gracefully handles partial state. Race conditions in concurrent checkpointing are solved with queue-based writes.
 
-**Session Management Isn't Just "Save State"** - It's understanding WHAT state matters (architectural decisions > file changes) and HOW to capture it without interrupting flow. Wrong checkpoint = worse than no checkpoint.
+### Semantic Search
+Keyword matching fails for conceptual queries across large codebases. ONNX embeddings (all-MiniLM-L6-v2) with cosine similarity enable meaning-based search — local inference, no API calls, instant results.
 
-**Crash Recovery Design** - After three false starts: detection must be non-intrusive (silent background check), recovery prompt must feel natural (not "ERROR: RESUME?"), and checkpoint frequency must be aggressive (every 2-3 tool calls, not "when convenient").
-
-**The Rebuild Test** - The ultimate validation of a system's design quality is whether you can rebuild it from documentation alone. KERNL passed this test literally—101 tools reconstructed from chat history in 8 hours because every decision was documented as it happened.
-
-### Challenges Faced
-
-**Race Conditions in Checkpointing** - Initial implementation would crash trying to save state during tool execution. Solution: separate checkpoint thread with queue-based writes.
-
-**Bootstrap Complexity** - Loading 101 tools worth of context every session is expensive. Solution: intelligent mode detection (coding vs architecture vs debugging) loads only relevant context.
-
-**Semantic Search Accuracy** - Keyword matching failed for conceptual queries. Solution: ONNX embeddings with cosine similarity for meaning-based search.
+### Resilience
+The entire tool suite has been rebuilt from documentation after an accidental drive wipe. The architecture survived because every decision was recorded as it happened. This validates the documentation-first approach that KERNL enforces.
 
 ## Architecture
 
@@ -172,7 +158,7 @@ KERNL:mark_complete({
 
 **WHETSTONE** - Adversarial engine calling Anthropic API for heterogeneous counter-positions. Two modes: epistemic (challenge assumptions with strongest counterargument) and code (intelligent mutation testing that identifies untested paths). Optional calibration dataset matching.
 
-**Rebuilt From Chat History** - The original 101-tool codebase was reconstructed from Claude conversation history alone after accidental deletion on January 14, 2026. Completed same day. Current 128-tool version evolved from that foundation.
+**Resilience Tested** - The full tool suite has been rebuilt from documentation after catastrophic data loss, validating the system's own documentation-first methodology.
 
 ## Documentation
 
@@ -184,12 +170,12 @@ KERNL:mark_complete({
 
 ## Contributing
 
-This project demonstrates systematic AI-native development methodology:
+Standards:
 
 1. **Quality Gates** - TypeScript strict mode, zero errors before commit
-2. **No Technical Debt** - No mocks, stubs, placeholders, or TODOs without tickets
-3. **Documentation Sync** - Every decision documented as it happens
-4. **Aggressive Checkpointing** - Every 2-3 tool calls, crash recovery built-in
+2. **No Technical Debt** - No mocks, stubs, or TODOs without tickets
+3. **Documentation Sync** - Every architectural decision documented inline
+4. **Aggressive Checkpointing** - State preserved every 2-3 operations
 5. **Protocol-Driven** - Explicit interfaces, comprehensive error handling
 
 Pull requests welcome that maintain these standards.
@@ -204,5 +190,4 @@ MIT - See [LICENSE](LICENSE) for details
 
 ---
 
-**Philosophy:** Build Intelligence, Not Plumbing  
-**Reality Check:** If you can rebuild 101 tools from chat history in one day, you documented correctly.
+**Philosophy:** Build intelligence, not plumbing.

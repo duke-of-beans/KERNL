@@ -4,8 +4,18 @@
  * Manages Puppeteer browser sessions with lifecycle handling.
  */
 
-import puppeteer, { Browser, Page, ElementHandle } from 'puppeteer';
+import type { Browser, Page, ElementHandle } from 'puppeteer';
 import { EventEmitter } from 'events';
+
+// Lazy-load puppeteer to avoid blocking ESM module init (60s MCP timeout)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _puppeteerMod: any = null;
+async function getPuppeteer() {
+  if (!_puppeteerMod) {
+    _puppeteerMod = await import('puppeteer');
+  }
+  return _puppeteerMod.default ?? _puppeteerMod;
+}
 
 // ==========================================================================
 // SESSION TYPES
@@ -53,7 +63,8 @@ class ChromeSessionManager extends EventEmitter {
     const sessionId = `chrome_${++this.sessionCounter}_${Date.now()}`;
 
     try {
-      const browser = await puppeteer.launch({
+      const pptr = await getPuppeteer();
+      const browser = await pptr.launch({
         headless: config.headless,
         defaultViewport: config.defaultViewport,
         args: [

@@ -11,7 +11,9 @@
  * - Automatic caching of model
  */
 
-import { pipeline, env } from '@xenova/transformers';
+// Lazy-loaded to avoid blocking ESM module init (60s MCP timeout).
+// @xenova/transformers loads ONNX runtime at import time — too heavy for startup.
+let _transformers: typeof import('@xenova/transformers') | null = null;
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -19,12 +21,9 @@ import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Configure model cache location
-env.cacheDir = join(__dirname, '..', '..', 'models');
-env.allowLocalModels = true;
-
-// Type for the pipeline instance
-type EmbeddingPipeline = Awaited<ReturnType<typeof pipeline>>;
+// Type for the pipeline instance (generic — resolved at runtime)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type EmbeddingPipeline = any;
 
 // Singleton instance
 let embeddingPipeline: EmbeddingPipeline | null = null;
@@ -46,11 +45,16 @@ async function initialize(): Promise<void> {
     console.error('[Embeddings] Loading model (first run will download ~90MB)...');
     const startTime = Date.now();
     
-    embeddingPipeline = await pipeline(
+    // Lazy-load the heavy ONNX runtime + transformers library
+    if (!_transformers) _transformers = await import('@xenova/transformers');
+    _transformers.env.cacheDir = join(__dirname, '..', '..', 'models');
+    _transformers.env.allowLocalModels = true;
+    
+    embeddingPipeline = await _transformers.pipeline(
       'feature-extraction',
       'Xenova/all-MiniLM-L6-v2',
       { 
-        quantized: true,  // Use quantized model for faster inference
+        quantized: true,
       }
     );
     

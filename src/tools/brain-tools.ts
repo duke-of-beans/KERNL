@@ -182,6 +182,143 @@ function buildFtsQuery(query: string): string {
   return tokens.length > 0 ? tokens.join(' OR ') : query.replace(/"/g, '');
 }
 
+// ─── PROMETHEUS-W1: Observation Quality Scoring ─────────────────────────────
+// Quality determines retrieval salience, never existence. No observation is
+// ever deleted or archived based on quality (National Razor: non-use is not
+// evidence of invalidity). Function is pure given (db, input): caller-controlled
+// side effects only. Used at brain_remember write time and by NIGHTSHIFT Pass 15.
+
+interface QualityInput {
+  content: string;
+  source: string;
+  grounding_tier: string;
+  embedding: Float32Array | null;
+  entity_id: string | null;
+  exclude_id?: string | null;
+}
+
+interface QualityFactors {
+  surprisal: number;
+  grounding_weight: number;
+  source_weight: number;
+  compression_ratio: number;
+  prediction_error: number;
+}
+
+interface QualityResult {
+  quality_score: number;
+  surprisal: number;
+  compression_ratio: number;
+  factors: QualityFactors;
+}
+
+const SOURCE_WEIGHTS: Record<string, number> = {
+  session: 1.00,
+  treg_scan: 0.95,
+  imprint: 0.90,
+  markdown_index: 0.85,
+  lantern_synthesis: 0.70,
+  greglite_scan: 0.50,
+};
+
+const GROUNDING_WEIGHTS: Record<string, number> = {
+  empirical: 1.00,
+  verified: 1.00,
+  theoretical: 0.75,
+  partial: 0.75,
+  speculative: 0.50,
+  weak: 0.50,
+  unknown: 0.50,
+};
+
+/** Compute quality score for an observation. Returns 0-1 quality, surprisal,
+ *  compression ratio, plus factor breakdown for diagnostics. Weighted sum of
+ *  five normalized factors: surprisal (k=5 NN distance), grounding tier weight,
+ *  source weight, compression ratio (structural density), prediction error
+ *  (divergence from same-entity priors). Equal weighting to start; tune later.
+ */
+export function computeQualityScore(db: BrainDB, input: QualityInput): QualityResult {
+  // --- 1. Surprisal: avg cosine distance to k=5 global NN ---
+  let surprisal = 0.5;
+  if (input.embedding && _vecLoaded) {
+    try {
+      const queryJson = JSON.stringify(Array.from(input.embedding));
+      const rows = db.prepare(
+        `SELECT vec_distance_cosine(embedding, vec_f32(?)) AS dist
+         FROM observations
+         WHERE tenant_id=? AND embedding IS NOT NULL AND status='active'
+           AND typeof(embedding)='blob' AND length(embedding)=3072
+           AND id != COALESCE(?, '')
+         ORDER BY dist ASC LIMIT 5`
+      ).all(queryJson, TENANT_ID, input.exclude_id ?? '') as { dist: number }[];
+      if (rows.length > 0) {
+        const avg = rows.reduce((s, r) => s + r.dist, 0) / rows.length;
+        // Cosine distance is 0 (identical) to 2 (opposite). Map to 0-1.
+        surprisal = Math.min(1, Math.max(0, avg / 2));
+      }
+    } catch { /* neutral */ }
+  }
+
+  // --- 2. Grounding tier weight (default neutral) ---
+  const groundingWeight = GROUNDING_WEIGHTS[(input.grounding_tier ?? 'unknown').toLowerCase()] ?? 0.5;
+
+  // --- 3. Source weight (default 0.6 for unknown sources) ---
+  const sourceWeight = SOURCE_WEIGHTS[(input.source ?? '').toLowerCase()] ?? 0.6;
+
+  // --- 4. Compression ratio: structural density per token ---
+  const tokens = input.content.split(/\s+/).filter(Boolean);
+  const tokenCount = Math.max(1, tokens.length);
+  const pathMatches = (input.content.match(/[A-Za-z]:\\[^\s]+|\/[A-Za-z0-9_./\-]+(?:\.[a-z]+)?/g) ?? []).length;
+  const versionMatches = (input.content.match(/\bv?\d+\.\d+(?:\.\d+)?\b/g) ?? []).length;
+  const entityLike = new Set<string>();
+  for (const t of tokens) {
+    if (/^[A-Z][a-z]+[A-Z][A-Za-z]+$/.test(t)) entityLike.add(t.toLowerCase()); // CamelCase
+    else if (/^[A-Z]{3,}$/.test(t)) entityLike.add(t.toLowerCase());            // 3+ char ACRONYM
+  }
+  const rawRatio = (entityLike.size + pathMatches + versionMatches) / tokenCount;
+  // Typical observations cluster 0.0-0.3 raw. ×3 then clamp gives usable 0-1.
+  const compressionRatio = Math.min(1, rawRatio * 3);
+
+  // --- 5. Prediction error: divergence from same-entity prior beliefs ---
+  let predictionError = 0.5;
+  if (input.entity_id && input.embedding && _vecLoaded) {
+    try {
+      const queryJson = JSON.stringify(Array.from(input.embedding));
+      const rows = db.prepare(
+        `SELECT vec_distance_cosine(embedding, vec_f32(?)) AS dist
+         FROM observations
+         WHERE tenant_id=? AND entity_id=? AND embedding IS NOT NULL
+           AND status='active' AND typeof(embedding)='blob' AND length(embedding)=3072
+           AND id != COALESCE(?, '')
+         ORDER BY dist ASC LIMIT 3`
+      ).all(queryJson, TENANT_ID, input.entity_id, input.exclude_id ?? '') as { dist: number }[];
+      if (rows.length > 0) {
+        const avg = rows.reduce((s, r) => s + r.dist, 0) / rows.length;
+        predictionError = Math.min(1, Math.max(0, avg / 2));
+      } else {
+        predictionError = 0.3; // first observation for this entity — modest novelty
+      }
+    } catch { /* neutral */ }
+  }
+
+  const factors: QualityFactors = {
+    surprisal,
+    grounding_weight: groundingWeight,
+    source_weight: sourceWeight,
+    compression_ratio: compressionRatio,
+    prediction_error: predictionError,
+  };
+  const quality = (surprisal + groundingWeight + sourceWeight + compressionRatio + predictionError) / 5;
+
+  const round4 = (x: number) => Math.round(x * 10000) / 10000;
+  return {
+    quality_score: round4(quality),
+    surprisal: round4(surprisal),
+    compression_ratio: round4(compressionRatio),
+    factors,
+  };
+}
+
 /** PROMETHEUS-W3: ensure the IMPRINT intentions table exists (idempotent).
  *  Mirrors the lazy-create pattern used for feedback_log. Intentions are
  *  forward-intention deltas (what David is working toward) with a 72h expiry.
@@ -230,6 +367,80 @@ function relativeTime(iso: string): string {
   return `in ${Math.round(diff / 86400000)}d`;
 }
 
+// ─── PROMETHEUS-W2: Session Activation + Spreading Activation ───────────
+// In-memory activation map. No schema change, no persistence. Lives for the
+// MCP server process lifetime = one session. Decays per tool call. Keyed by
+// entity_id. brain_recall_spread propagates activation through brain_edges
+// so the session warms to topics related to recent queries.
+
+const sessionActivation = new Map<string, number>();
+const SESSION_BOOST_RECALL = 0.2;
+const SESSION_BOOST_STATUS = 0.3;
+const SESSION_DECAY = 0.05;
+const ACTIVATION_MAX = 1.0;
+
+function tickActivation(): void {
+  if (sessionActivation.size === 0) return;
+  for (const [id, level] of sessionActivation) {
+    const next = level - SESSION_DECAY;
+    if (next <= 0) sessionActivation.delete(id);
+    else sessionActivation.set(id, next);
+  }
+}
+
+function boostActivation(entityId: string | null | undefined, amount: number): void {
+  if (!entityId) return;
+  const current = sessionActivation.get(entityId) ?? 0;
+  sessionActivation.set(entityId, Math.min(ACTIVATION_MAX, current + amount));
+}
+
+function spreadActivation(
+  db: BrainDB,
+  seedEntityIds: string[],
+  depth = 2,
+  dampening = 0.5
+): Map<string, number> {
+  const activations = new Map<string, number>();
+  for (const seed of seedEntityIds) activations.set(seed, 1.0);
+  let frontier = new Map<string, number>(activations);
+
+  for (let d = 0; d < depth; d++) {
+    if (frontier.size === 0) break;
+    const next = new Map<string, number>();
+    for (const [entId, parentAct] of frontier) {
+      try {
+        const edges = db.prepare(
+          `SELECT target_entity_id AS nb, relationship, weight FROM brain_edges
+             WHERE source_entity_id = ? AND (valid_to IS NULL OR valid_to > datetime('now'))
+           UNION ALL
+           SELECT source_entity_id AS nb, relationship, weight FROM brain_edges
+             WHERE target_entity_id = ? AND (valid_to IS NULL OR valid_to > datetime('now'))`
+        ).all(entId, entId) as { nb: string; relationship: string; weight: number }[];
+        for (const e of edges) {
+          if (!e.nb) continue;
+          const normWeight = Math.min(1, Math.max(0, e.weight));
+          const relMultiplier = e.relationship === 'structural_isomorphism' ? 1.2 : 1.0;
+          const contribution = parentAct * normWeight * relMultiplier * dampening;
+          if (contribution < 0.01) continue;
+          const existing = next.get(e.nb) ?? 0;
+          next.set(e.nb, Math.min(1, existing + contribution));
+        }
+      } catch { /* edge query failed for this entity — skip */ }
+    }
+    for (const [k, v] of next) {
+      const prev = activations.get(k) ?? 0;
+      activations.set(k, Math.max(prev, v));
+    }
+    frontier = next;
+  }
+
+  for (const [k, v] of sessionActivation) {
+    const prev = activations.get(k) ?? 0;
+    activations.set(k, Math.max(prev, v));
+  }
+  return activations;
+}
+
 export const brainTools: Tool[] = [
   {
     name: 'brain_briefing',
@@ -238,7 +449,7 @@ export const brainTools: Tool[] = [
   },
   {
     name: 'brain_recall',
-    description: '3-signal RRF recall across brain.db observations. Fuses nomic-embed-text vector cosine + BM25 keyword + MiniLM semantic re-ranking. Finds relevant memories by meaning, not just keywords.',
+    description: '3-signal RRF recall across brain.db observations. Fuses nomic-embed-text vector cosine + BM25 keyword + MiniLM semantic re-ranking, then re-weights by observation quality (0.7-1.0 multiplier). Finds relevant memories by meaning, ranked by information value.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -362,6 +573,20 @@ export const brainTools: Tool[] = [
         entity: { type: 'string', description: 'Entity whose most recent active intention to resolve' },
         id: { type: 'number', description: 'Specific intention id to resolve (overrides entity when provided)' },
       },
+    },
+  },
+  {
+    name: 'brain_recall_spread',
+    description: 'PROMETHEUS-W2 spreading-activation recall over brain_edges. Seeds entity activation from a standard recall, propagates through the graph weighted by edge strength, runs a second recall scoped to activated entities, and re-ranks by spread_score = rrf × quality × activation. Session warmth accumulates across calls and decays per call. Use for deep contextual queries; prefer brain_recall for fast simple lookups.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Natural language search query' },
+        depth: { type: 'number', description: 'Spread depth in graph hops (default 2, range 1-4)' },
+        dampening: { type: 'number', description: 'Per-hop dampening factor 0.1-0.9 (default 0.5)' },
+        limit: { type: 'number', description: 'Max results (default 10)' },
+      },
+      required: ['query'],
     },
   },
   {
@@ -500,14 +725,33 @@ async function handleRecall(input: { query: string; scope?: string; limit?: numb
 
   // RRF fusion
   const allIds = new Set([...vectorRank.keys(), ...bm25Rank.keys()]);
-  const results: { id: string; content: string; entity_id: string | null; entity_name: string | null; source: string; created_at: string; score: number; rank: number }[] = [];
+
+  // --- Quality-weighted RRF (PROMETHEUS-W1) ---
+  // Batch-fetch quality_score for all candidates. NULL → 0.5 (neutral).
+  // Quality applies a 0.7–1.0 multiplier on the RRF score: high quality boosts
+  // ranking by up to 30%, low quality preserves natural RRF rank. Quality
+  // never excludes — only re-ranks. National Razor enforced.
+  const qualityMap = new Map<string, number | null>();
+  if (allIds.size > 0) {
+    try {
+      const qIds = [...allIds];
+      const placeholders = qIds.map(() => '?').join(',');
+      const qrows = db.prepare(`SELECT id, quality_score FROM observations WHERE id IN (${placeholders})`).all(...qIds) as { id: string; quality_score: number | null }[];
+      for (const r of qrows) qualityMap.set(r.id, r.quality_score);
+    } catch { /* quality lookup best-effort */ }
+  }
+
+  const results: { id: string; content: string; entity_id: string | null; entity_name: string | null; source: string; created_at: string; score: number; quality_score: number | null; rank: number }[] = [];
   for (const id of allIds) {
     const rrfScore = (vectorRank.has(id) ? 1 / (RRF_K + vectorRank.get(id)!) : 0)
                    + (bm25Rank.has(id) ? 1 / (RRF_K + bm25Rank.get(id)!) : 0);
+    const q = qualityMap.get(id);
+    const qWeight = 0.7 + 0.3 * (q ?? 0.5);
+    const weighted = rrfScore * qWeight;
     let meta = vectorMeta.get(id);
     if (!meta) { const row = db.prepare("SELECT id,content,entity_id,source,created_at FROM observations WHERE id=? AND status='active'").get(id) as VRow | null; if (!row) continue; meta = { ...row, similarity: 0 }; }
     const ent = meta.entity_id ? (db.prepare('SELECT name FROM entities WHERE id=?').get(meta.entity_id) as { name: string } | null) : null;
-    results.push({ id, content: meta.content, entity_id: meta.entity_id, entity_name: ent?.name ?? null, source: meta.source, created_at: meta.created_at, score: parseFloat(rrfScore.toFixed(6)), rank: 0 });
+    results.push({ id, content: meta.content, entity_id: meta.entity_id, entity_name: ent?.name ?? null, source: meta.source, created_at: meta.created_at, score: parseFloat(weighted.toFixed(6)), quality_score: q ?? null, rank: 0 });
   }
   results.sort((a, b) => b.score - a.score);
 
@@ -533,12 +777,13 @@ async function handleRecall(input: { query: string; scope?: string; limit?: numb
       const semanticRank = new Map<string, number>();
       semanticScored.forEach((s, i) => semanticRank.set(s.id, i + 1));
 
-      // Recompute RRF with 3 signals for re-ranked pool
+      // Recompute RRF with 3 signals for re-ranked pool, preserving quality weight
       for (const r of reRankPool) {
         const vr = vectorRank.has(r.id) ? 1 / (RRF_K + vectorRank.get(r.id)!) : 0;
         const br = bm25Rank.has(r.id) ? 1 / (RRF_K + bm25Rank.get(r.id)!) : 0;
         const sr = semanticRank.has(r.id) ? 1 / (RRF_K + semanticRank.get(r.id)!) : 0;
-        r.score = parseFloat((vr + br + sr).toFixed(6));
+        const qw = 0.7 + 0.3 * (qualityMap.get(r.id) ?? 0.5);
+        r.score = parseFloat(((vr + br + sr) * qw).toFixed(6));
       }
       reRankPool.sort((a, b) => b.score - a.score);
       // Splice re-ranked candidates back in
@@ -560,13 +805,16 @@ async function handleRecall(input: { query: string; scope?: string; limit?: numb
     for (const r of final) { trackStmt.run(r.id); }
   } catch { /* tracking is best-effort, don't fail recall */ }
 
+  // PROMETHEUS-W2: warm session activation for returned entities.
+  for (const r of final) boostActivation(r.entity_id, SESSION_BOOST_RECALL);
+
   return { query: input.query, scope: _scope, results: final, total_candidates: allIds.size, vector_search: _vecLoaded, semantic_rerank: semanticRerank };
 }
 
 async function handleRecallGraph(input: { query: string; scope?: string; limit?: number }): Promise<object> {
   const db = getBrainDb();
   if (!db) return { query: input.query, results: [], graph_neighbors: [], error: 'brain.db unavailable' };
-  const seedResult = await handleRecall(input) as { results: { id: string; content: string; entity_id: string | null; entity_name: string | null; score: number; rank: number; source: string; created_at: string }[]; total_candidates: number; scope: string; vector_search: boolean; semantic_rerank: boolean; };
+  const seedResult = await handleRecall(input) as { results: { id: string; content: string; entity_id: string | null; entity_name: string | null; score: number; quality_score: number | null; rank: number; source: string; created_at: string }[]; total_candidates: number; scope: string; vector_search: boolean; semantic_rerank: boolean; };
   const seedEntityIds = [...new Set(seedResult.results.map(r => r.entity_id).filter((id): id is string => !!id))].slice(0, 6);
   let graphNeighbors: object[] = [], graphObs: object[] = [], graphSummary = '';
   try {
@@ -605,11 +853,32 @@ async function handleRemember(input: { content: string; entity?: string; source?
     }
     db.prepare(`INSERT INTO observations (id,tenant_id,entity_id,content,source,tags,content_hash,created_at,created_by,status,embedding_version,synthesis_depth) VALUES (@id,@tenant_id,@entity_id,@content,@source,'[]',@content_hash,@now,'brain_remember','active',1,0)`)
       .run({ id, tenant_id: TENANT_ID, entity_id: entityId, content: input.content, source: _source, content_hash: contentHash, now });
+    let qualityResult: QualityResult | null = null;
     try {
       const emb = await generateEmbedding('search_document: ' + input.content);
       db.prepare('UPDATE observations SET embedding=? WHERE id=?').run(Buffer.from(emb.buffer), id);
-    } catch { /* saved without embedding */ }
-    return { observation_id: id, entity_resolved: entityResolved, source: _source, created_at: now };
+      // --- PROMETHEUS-W1: compute quality at write time ---
+      try {
+        const grounding = (db.prepare('SELECT grounding_tier FROM observations WHERE id=?').get(id) as { grounding_tier: string | null } | null)?.grounding_tier ?? 'unknown';
+        qualityResult = computeQualityScore(db, {
+          content: input.content,
+          source: _source,
+          grounding_tier: grounding,
+          embedding: emb,
+          entity_id: entityId,
+          exclude_id: id,
+        });
+        db.prepare('UPDATE observations SET quality_score=?, surprisal=?, compression_ratio=? WHERE id=?')
+          .run(qualityResult.quality_score, qualityResult.surprisal, qualityResult.compression_ratio, id);
+      } catch { /* quality scoring best-effort; NULL → Pass 15 backfill */ }
+    } catch { /* saved without embedding — quality_score stays NULL for Pass 15 */ }
+    return {
+      observation_id: id,
+      entity_resolved: entityResolved,
+      source: _source,
+      created_at: now,
+      quality_score: qualityResult?.quality_score ?? null,
+    };
   } catch (e) { return { error: (e as Error).message }; }
 }
 
@@ -624,6 +893,8 @@ function handleStatus(input: { project: string }): object {
     let metadata: Record<string, unknown> = {}; try { metadata = JSON.parse(entity.metadata); } catch { /**/ }
     const recentObs = db.prepare(`SELECT id,content,source,created_at FROM observations WHERE tenant_id=? AND entity_id=? ORDER BY created_at DESC LIMIT 5`).all(TENANT_ID, entity.id) as { id: string; content: string; source: string; created_at: string }[];
     const latestSignal = db.prepare(`SELECT source,value,previous_value,changed_at,polled_at FROM signals WHERE tenant_id=? AND entity_id=? ORDER BY polled_at DESC LIMIT 1`).get(TENANT_ID, entity.id) as { source: string; value: string; previous_value: string; changed_at: string | null; polled_at: string } | undefined;
+    // PROMETHEUS-W2: status lookup is a stronger warmth signal than recall.
+    boostActivation(entity.id, SESSION_BOOST_STATUS);
     return {
       entity: { id: entity.id, name: entity.name, type: entity.type, status: entity.status, metadata, updated_at: entity.updated_at },
       recent_observations: recentObs.map(o => ({ content: o.content.slice(0, 300), source: o.source, created_at: o.created_at })),
@@ -944,11 +1215,11 @@ async function handleProjectContextScan(input: { project: string; task?: string 
     let neighbors: { entity_name: string; relationship: string; weight: number }[] = [];
     if (entity) {
       try {
-        const rawNeighbors = getNeighborEntities(db, TENANT_ID, entity.id, 10);
-        neighbors = rawNeighbors.map((n: { entity_name: string; relationship: string; weight: number }) => ({
+        const rawNeighbors = getNeighborEntities(db, [entity.id], 10);
+        neighbors = rawNeighbors.map((n) => ({
           entity_name: n.entity_name,
-          relationship: n.relationship,
-          weight: n.weight,
+          relationship: n.edge_relationship,
+          weight: n.edge_weight,
         }));
       } catch { /* graph may not be available */ }
     }
@@ -1020,18 +1291,167 @@ async function handleProjectContextScan(input: { project: string; task?: string 
   }
 }
 
-export function createBrainHandlers(): Record<string, (input: Record<string, unknown>) => Promise<unknown>> {
+/** PROMETHEUS-W2 brain_recall_spread: spreading-activation recall.
+ *  Phase 1: standard brain_recall to get top results.
+ *  Phase 2: extract entity seeds → spreadActivation through brain_edges.
+ *  Phase 3: second recall pass scoped to activated entities.
+ *  Phase 4: merge + re-rank via spread_score:
+ *    quality-aware  → rrf × (0.7 + 0.3 × quality) × (0.6 + 0.4 × activation)
+ *    quality-absent → rrf × (0.6 + 0.4 × activation)
+ *  Quality column presence detected dynamically. */
+async function handleRecallSpread(input: {
+  query: string;
+  depth?: number;
+  dampening?: number;
+  limit?: number;
+}): Promise<object> {
+  const db = getBrainDb();
+  if (!db) return { query: input.query, results: [], error: 'brain.db unavailable' };
+  const _depth = Math.max(1, Math.min(4, input.depth ?? 2));
+  const _dampening = Math.max(0.1, Math.min(0.9, input.dampening ?? 0.5));
+  const _limit = input.limit ?? 10;
+  const t0 = Date.now();
+
+  let hasQuality = false;
+  try {
+    const cols = db.prepare('PRAGMA table_info(observations)').all() as { name: string }[];
+    hasQuality = cols.some(c => c.name === 'quality_score');
+  } catch { /* assume absent */ }
+
+  const seedResult = await handleRecall({ query: input.query, limit: _limit }) as {
+    results: { id: string; content: string; entity_id: string | null; entity_name: string | null;
+               score: number; quality_score: number | null; rank: number;
+               source: string; created_at: string }[];
+    total_candidates: number; scope: string; vector_search: boolean; semantic_rerank: boolean;
+  };
+
+  const seedEntityIds = [...new Set(
+    seedResult.results.slice(0, 5).map(r => r.entity_id).filter((id): id is string => !!id)
+  )];
+
+  const activated = seedEntityIds.length > 0
+    ? spreadActivation(db, seedEntityIds, _depth, _dampening)
+    : new Map<string, number>(sessionActivation);
+
+  const activatedNonSeed = [...activated.keys()].filter(id => !seedEntityIds.includes(id));
+  type SpreadRow = {
+    id: string; content: string; entity_id: string;
+    entity_name: string | null; source: string;
+    created_at: string; quality_score: number | null;
+  };
+  let spreadObs: (SpreadRow & { activation: number })[] = [];
+  if (activatedNonSeed.length > 0) {
+    try {
+      const ids = activatedNonSeed.slice(0, 500);
+      const placeholders = ids.map(() => '?').join(',');
+      const qSelect = hasQuality ? 'o.quality_score' : 'NULL AS quality_score';
+      const rows = db.prepare(
+        `SELECT o.id, o.content, o.entity_id, e.name AS entity_name,
+                o.source, o.created_at, ${qSelect}
+         FROM observations o LEFT JOIN entities e ON e.id = o.entity_id
+         WHERE o.tenant_id = ? AND o.status = 'active'
+           AND o.entity_id IN (${placeholders})
+         ORDER BY (CASE WHEN o.embedding IS NOT NULL THEN 1 ELSE 0 END) DESC,
+                  o.created_at DESC
+         LIMIT ?`
+      ).all(TENANT_ID, ...ids, _limit * 3) as SpreadRow[];
+      spreadObs = rows.map(r => ({ ...r, activation: activated.get(r.entity_id) ?? 0 }));
+    } catch { /* spread DB error → return seed-only */ }
+  }
+
+  interface MergedRow {
+    id: string; content: string; entity_id: string | null;
+    entity_name: string | null; source: string; created_at: string;
+    rrf_score: number; quality_score: number | null;
+    activation: number; rank: number; spread_score: number;
+    via: 'seed' | 'spread';
+  }
+  const merged = new Map<string, MergedRow>();
+
+  for (const r of seedResult.results) {
+    const ent = r.entity_id ?? '';
+    const act = Math.max(activated.get(ent) ?? 0, sessionActivation.get(ent) ?? 0);
+    merged.set(r.id, {
+      id: r.id, content: r.content, entity_id: r.entity_id, entity_name: r.entity_name,
+      source: r.source, created_at: r.created_at,
+      rrf_score: r.score, quality_score: r.quality_score,
+      activation: act, rank: 0, spread_score: 0, via: 'seed',
+    });
+  }
+
+  const SPREAD_BASE_RRF = 1 / 70;
+  for (let i = 0; i < spreadObs.length; i++) {
+    const so = spreadObs[i]!;
+    if (merged.has(so.id)) {
+      const existing = merged.get(so.id)!;
+      if (so.activation > existing.activation) existing.activation = so.activation;
+      continue;
+    }
+    const positionDecay = SPREAD_BASE_RRF * (1 - i / (spreadObs.length + 5));
+    merged.set(so.id, {
+      id: so.id, content: so.content, entity_id: so.entity_id, entity_name: so.entity_name,
+      source: so.source, created_at: so.created_at,
+      rrf_score: positionDecay,
+      quality_score: so.quality_score,
+      activation: so.activation, rank: 0, spread_score: 0, via: 'spread',
+    });
+  }
+
+  for (const m of merged.values()) {
+    const actMult = 0.6 + 0.4 * m.activation;
+    const qMult = hasQuality ? (0.7 + 0.3 * (m.quality_score ?? 0.5)) : 1.0;
+    m.spread_score = parseFloat((m.rrf_score * qMult * actMult).toFixed(6));
+  }
+
+  const final = [...merged.values()]
+    .sort((a, b) => b.spread_score - a.spread_score)
+    .slice(0, _limit);
+  final.forEach((r, i) => { r.rank = i + 1; });
+
+  try {
+    const trackStmt = db.prepare(
+      "UPDATE observations SET last_accessed_at=datetime('now'), access_count=COALESCE(access_count,0)+1 WHERE id=?"
+    );
+    for (const r of final) trackStmt.run(r.id);
+  } catch { /* best-effort */ }
+
+  for (const r of final) boostActivation(r.entity_id, SESSION_BOOST_RECALL);
+
+  const elapsedMs = Date.now() - t0;
   return {
-    brain_briefing:      (i) => handleBriefing(i as { since?: string }),
-    brain_recall:        (i) => handleRecall(i as { query: string; scope?: string; limit?: number }),
-    brain_recall_graph:  (i) => handleRecallGraph(i as { query: string; scope?: string; limit?: number }),
-    brain_remember:      (i) => handleRemember(i as { content: string; entity?: string; source?: string }),
-    brain_status:        (i) => Promise.resolve(handleStatus(i as { project: string })),
-    brain_feedback:      (i) => handleFeedback(i as { observation_id: string; rating: 'helpful'|'unhelpful'|'critical'; context?: string }),
-    whetstone_challenge: (i) => handleWhetstone(i as { position: string; context?: string; calibration?: boolean; mode?: string; source_file?: string; test_file?: string; mutation_count?: number }),
-    imprint_reflect:     (i) => handleImprint(i as { session_summary: string; outcomes?: string; corrections?: string }),
-    imprint_set_intention: (i) => Promise.resolve(handleSetIntention(i as { entity: string; intention: string; metacognitive_state?: string; context?: string })),
-    imprint_resolve_intention: (i) => Promise.resolve(handleResolveIntention(i as { entity?: string; id?: number })),
-    project_context_scan: (i) => handleProjectContextScan(i as { project: string; task?: string }),
+    query: input.query,
+    depth: _depth,
+    dampening: _dampening,
+    quality_aware: hasQuality,
+    seed_entities: seedEntityIds.length,
+    activated_entities: activated.size,
+    spread_candidates: spreadObs.length,
+    results: final,
+    elapsed_ms: elapsedMs,
+    activation_snapshot: [...sessionActivation.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([id, level]) => ({ entity_id: id, activation: parseFloat(level.toFixed(3)) })),
+  };
+}
+
+export function createBrainHandlers(): Record<string, (input: Record<string, unknown>) => Promise<unknown>> {
+  // PROMETHEUS-W2: wrap each handler in tickActivation() so the session
+  // activation map decays once per brain_* tool call.
+  const tick = <T>(fn: (i: Record<string, unknown>) => Promise<T> | T) =>
+    async (i: Record<string, unknown>): Promise<T> => { tickActivation(); return await fn(i); };
+  return {
+    brain_briefing:      tick((i) => handleBriefing(i as { since?: string })),
+    brain_recall:        tick((i) => handleRecall(i as { query: string; scope?: string; limit?: number })),
+    brain_recall_graph:  tick((i) => handleRecallGraph(i as { query: string; scope?: string; limit?: number })),
+    brain_recall_spread: tick((i) => handleRecallSpread(i as { query: string; depth?: number; dampening?: number; limit?: number })),
+    brain_remember:      tick((i) => handleRemember(i as { content: string; entity?: string; source?: string })),
+    brain_status:        tick((i) => Promise.resolve(handleStatus(i as { project: string }))),
+    brain_feedback:      tick((i) => handleFeedback(i as { observation_id: string; rating: 'helpful'|'unhelpful'|'critical'; context?: string })),
+    whetstone_challenge: tick((i) => handleWhetstone(i as { position: string; context?: string; calibration?: boolean; mode?: string; source_file?: string; test_file?: string; mutation_count?: number })),
+    imprint_reflect:     tick((i) => handleImprint(i as { session_summary: string; outcomes?: string; corrections?: string })),
+    imprint_set_intention: tick((i) => Promise.resolve(handleSetIntention(i as { entity: string; intention: string; metacognitive_state?: string; context?: string }))),
+    imprint_resolve_intention: tick((i) => Promise.resolve(handleResolveIntention(i as { entity?: string; id?: number }))),
+    project_context_scan: tick((i) => handleProjectContextScan(i as { project: string; task?: string })),
   };
 }

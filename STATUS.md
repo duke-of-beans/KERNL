@@ -2,7 +2,7 @@
 
 **Status:** production
 **Version:** 3.0.0 (KERNL-BRAIN-02 v3.0 + Cognitive Organism)
-**Last Updated: 2026-05-23 (auto — docs(brain): PROMETHEUS-W3 sync -- STATUS + MORNING_BRIEFING)
+**Last Updated: 2026-05-28 (PROMETHEUS-W2 — spreading activation recall, session warmth tracking, brain_recall_spread tool)
 **Yuma Health:** 65/100 ORANGE (30 specs, 9 pass) (auto — Yuma)
 **Code Health:** 12/100 (23 critical, 358 warnings) (auto — EoS)
 **Completion:** 83% (auto — 20 done, 4 pending)
@@ -19,11 +19,12 @@ server integrated with Claude Desktop. Tier 0 infrastructure — always on, neve
 Path: `D:\Projects\Project Mind\kernl-mcp`
 GitHub: https://github.com/duke-of-beans/KERNL
 
-## Operational Tools (10/10 verified 2026-05-17)
+## Operational Tools (11/11 verified 2026-05-28)
 
 - [x] brain_briefing — live portfolio delta, P0 items, changed signals
 - [x] brain_recall — RRF hybrid search (v3.0: Reciprocal Rank Fusion, k=60)
 - [x] brain_recall_graph — graph-enhanced recall via 7k+ brain_edges + structural isomorphisms
+- [x] brain_recall_spread — PROMETHEUS-W2 spreading-activation recall with session warmth
 - [x] brain_remember — write observation (SHA-256 dedup guard, auto-embedded)
 - [x] brain_feedback — reinforcement loop (helpful/unhelpful/critical)
 - [x] brain_status — entity details + recent observations + latest signal
@@ -44,6 +45,8 @@ GitHub: https://github.com/duke-of-beans/KERNL
 - [x] Signal watcher: Windows service (anthropic, vercel, github, godaddy, supabase)
 - [x] Litestream backup: brain.db → Cloudflare R2
 - [x] PROMETHEUS-W3: IMPRINT delta-I (forward intention) tracking -- intentions table, imprint_set_intention + imprint_resolve_intention tools, brain_briefing surfacing, imprint_reflect lifecycle (2026-05-23)
+- [x] PROMETHEUS-W1: Observation quality engine -- computeQualityScore, write-time quality, RRF quality re-weight (2026-05-28)
+- [x] PROMETHEUS-W2: Spreading-activation recall -- in-memory session activation map (0.2 boost/recall, 0.3/status, 0.05 decay/call), spreadActivation BFS through brain_edges with structural_isomorphism 1.2x boost, brain_recall_spread tool with quality-aware spread_score (2026-05-28)
 
 ## Open Work
 

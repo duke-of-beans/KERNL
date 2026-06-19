@@ -36,6 +36,10 @@ import { researchTools, createResearchHandlers } from '../tools/research-tools.j
 import { brainTools, createBrainHandlers } from '../tools/brain-tools.js';
 // Phase 9: AUTONOMIC sprint queue (queue_sprint + preflight_check)
 import { autonomicTools, createAutonomicHandlers } from '../tools/autonomic-tools.js';
+// Phase 6: Backlog-to-Sprint pipeline (B2S-001 backlog_to_sprint)
+import { backlogToSprintTools, createBacklogToSprintHandlers } from '../tools/backlog-to-sprint-tools.js';
+// Phase 9: Eye of Sauron quality scan (eos_quick_scan)
+import { eosTools, createEosHandlers } from '../tools/eos-tools.js';
 export class KernlMCPServer {
     server;
     db;
@@ -84,6 +88,10 @@ export class KernlMCPServer {
         register(brainTools, createBrainHandlers());
         // Phase 9: AUTONOMIC sprint queue
         register(autonomicTools, createAutonomicHandlers());
+        // Phase 6: Backlog-to-Sprint pipeline
+        register(backlogToSprintTools, createBacklogToSprintHandlers());
+        // Phase 9: Eye of Sauron quality scan
+        register(eosTools, createEosHandlers());
         // Version tool
         this.tools.set('kernl_version', {
             name: 'kernl_version',

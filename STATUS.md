@@ -2,11 +2,11 @@
 
 **Status:** production
 **Version:** 3.0.0 (KERNL-BRAIN-02 v3.0 + Cognitive Organism)
-**Last Updated: 2026-06-04 (AUT-20260603-001 — queue_sprint + preflight_check tools)
+**Last Updated: 2026-06-05 (auto — YUMA: replace hardcoded freshness=70 with consecutive-pass-s)
 **Yuma Health:** 65/100 ORANGE (30 specs, 9 pass) (auto — Yuma)
-**Code Health:** 12/100 (23 critical, 359 warnings) (auto — EoS)
-**Completion:** 86% (auto — 25 done, 4 pending)
-**Tests:** failing (exit 1)
+**Code Health:** 18/100 (26 critical, 359 warnings) (auto — EoS)
+**Completion:** 87% (auto — 26 done, 4 pending)
+**Tests:** 2/2 passing (auto)
 
 ---
 

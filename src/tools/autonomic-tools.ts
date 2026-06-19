@@ -31,6 +31,7 @@ import * as http from 'node:http';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { createEosHandlers } from './eos-tools.js';
+import { createBrainHandlers } from './brain-tools.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -69,7 +70,7 @@ const KNOWN_TOOLS = new Set([
   'brain_invalidate', 'whetstone_challenge', 'imprint_reflect',
   'imprint_set_intention', 'imprint_resolve_intention',
   'five_gate_check', 'smart_commit', 'test_run', 'test_health',
-  'shadow_doc_update', 'project_context_scan',
+  'shadow_doc_update', 'project_context_scan', 'inject_sprint_context',
 ]);
 const SEARCH_EXCLUDES = new Set(['node_modules', '.git', 'dist', '.next', 'build', 'coverage', '.cache']);
 const SEARCH_MAX_VISITS = 20000;
@@ -1124,6 +1125,22 @@ export const autonomicTools: Tool[] = [
       required: ['sprint_id'],
     },
   },
+  {
+    name: 'inject_sprint_context',
+    description:
+      'Retrieve relevant brain memory observations for a sprint and return a formatted context block ' +
+      'to prepend before execution. Reduces dependency-missing aborts by surfacing prior knowledge ' +
+      'about the sprint\'s project, entity, and domain. Call before executing any sprint.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sprint_text: { type: 'string', description: 'The full sprint body text (YAML frontmatter + task body)' },
+        sprint_id: { type: 'string', description: 'Optional sprint ID (for logging/context)' },
+        limit: { type: 'number', description: 'Max observations to retrieve (default 6)' },
+      },
+      required: ['sprint_text'],
+    },
+  },
 ];
 
 // ==========================================================================
@@ -1927,6 +1944,62 @@ export function createAutonomicHandlers(): Record<string, (input: Record<string,
         warnings,
         ...(project ? { project } : {}),
       };
+    },
+
+    inject_sprint_context: async (input) => {
+      const sprintText = input.sprint_text as string;
+      if (!sprintText) return { error: 'inject_sprint_context requires sprint_text', context_block: '' };
+
+      const sprintId = (input.sprint_id as string) || '';
+      const limit = typeof input.limit === 'number' ? input.limit : 6;
+
+      // Extract project and title from YAML frontmatter or markdown heading
+      const projectMatch = sprintText.match(/^project:\s*(.+)/m);
+      const titleMatch = sprintText.match(/^title:\s*'?([^'\n]+)'?/m) || sprintText.match(/^#\s+(.+)/m);
+      const project = projectMatch ? projectMatch[1].trim() : '';
+      const title = titleMatch ? titleMatch[1].trim() : '';
+
+      // Build query from sprint metadata — fall back to first 200 chars of body
+      const queryParts = [title, project].filter(Boolean);
+      const query = queryParts.length > 0 ? queryParts.join(' ') : sprintText.slice(0, 200);
+
+      try {
+        const brainHandlers = createBrainHandlers();
+        const recalled = await brainHandlers.brain_recall({ query, limit }) as {
+          results?: Array<{ content: string; entity_name: string | null; source: string; created_at: string }>;
+        };
+
+        const results = recalled.results ?? [];
+        if (results.length === 0) {
+          return { context_block: '', observations_count: 0, query, ...(sprintId ? { sprint_id: sprintId } : {}) };
+        }
+
+        const lines = results.map((r, i) => {
+          const entity = r.entity_name ? ` [${r.entity_name}]` : '';
+          const date = r.created_at ? ` (${r.created_at.slice(0, 10)})` : '';
+          const snippet = r.content.length > 300 ? r.content.slice(0, 300) + '...' : r.content;
+          return `${i + 1}.${entity}${date} ${snippet}`;
+        });
+
+        const contextBlock =
+          `<!-- INJECTED BRAIN CONTEXT: ${results.length} observations for "${query}" -->\n` +
+          lines.join('\n') +
+          `\n<!-- END BRAIN CONTEXT -->`;
+
+        return {
+          context_block: contextBlock,
+          observations_count: results.length,
+          query,
+          ...(sprintId ? { sprint_id: sprintId } : {}),
+        };
+      } catch (e) {
+        return {
+          context_block: '',
+          observations_count: 0,
+          query,
+          error: `brain_recall failed: ${(e as Error).message}`,
+        };
+      }
     },
   };
 }

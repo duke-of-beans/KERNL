@@ -650,6 +650,20 @@ export const brainTools: Tool[] = [
       required: ['project'],
     },
   },
+  {
+    name: 'memory_source_quality',
+    description:
+      'Analyse brain.db observation sources by recall rate, stale rate, and quality score. ' +
+      'Returns per-source stats and recommended SOURCE_WEIGHT adjustments. ' +
+      'High recall rate = high value source. Low recall + high stale rate = candidate for reduced weight.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        top_n: { type: 'number', description: 'Max sources to return (default 20)' },
+        min_obs: { type: 'number', description: 'Minimum observation count to include a source (default 5)' },
+      },
+    },
+  },
 ];
 
 async function handleBriefing(input: { since?: string }): Promise<object> {
@@ -869,6 +883,11 @@ async function handleRecallGraph(input: { query: string; scope?: string; limit?:
     graphNeighbors = neighbors.map(n => ({ entity_name: n.entity_name, entity_type: n.entity_type, relationship: n.edge_relationship, weight: n.edge_weight }));
     const edgeWeightMap = new Map(neighbors.map(n => [n.entity_id, n.edge_weight]));
     const neighborObs = getObservationsForEntities(db, neighbors.slice(0, 5).map(n => n.entity_id), 3, edgeWeightMap);
+    // A2-recallgraph-tracking (AUT-20260607-005): count graph-neighbor observations surfaced to the model.
+    try {
+      const _ts = db.prepare("UPDATE observations SET last_accessed_at=datetime('now'), access_count=COALESCE(access_count,0)+1 WHERE id=?");
+      for (const _o of (neighborObs as Array<{ id?: string }>)) { if (_o.id) _ts.run(_o.id); }
+    } catch { /* best-effort recall tracking, don't fail graph recall */ }
     graphObs = neighborObs.map(o => ({ content: o.content.length > 200 ? o.content.slice(0, 200) + '…' : o.content, entity_name: o.entity_name, via_entity: o.via_entity, graph_boost: o.graph_boost }));
     graphSummary = buildGraphSummary(seedResult.results.slice(0, 3).map(s => s.entity_name ?? '').filter(Boolean), neighbors, neighborObs);
   } catch { /* degrade */ }
@@ -1600,6 +1619,95 @@ async function handleRecallCommunity(input: { entity: string; limit?: number }):
   };
 }
 
+async function handleMemorySourceQuality(input: { top_n?: number; min_obs?: number }): Promise<object> {
+  const topN = (input.top_n ?? 20) as number;
+  const minObs = (input.min_obs ?? 5) as number;
+
+  const db = getBrainDb();
+  if (!db) return { error: 'brain.db unavailable' };
+
+  try {
+    let hasQuality = false;
+    try {
+      const cols = db.prepare('PRAGMA table_info(observations)').all() as { name: string }[];
+      hasQuality = cols.some(c => c.name === 'quality_score');
+    } catch { /* */ }
+
+    const qSelect = hasQuality ? ', ROUND(AVG(quality_score), 3) as avg_quality' : '';
+
+    const rows = db.prepare(`
+      SELECT
+        source,
+        COUNT(*) as total_obs,
+        SUM(CASE WHEN access_count > 0 THEN 1 ELSE 0 END) as recalled_count,
+        ROUND(AVG(COALESCE(access_count, 0)), 2) as avg_access_count,
+        SUM(CASE WHEN created_at < datetime('now', '-14 days') AND (access_count IS NULL OR access_count = 0) THEN 1 ELSE 0 END) as stale_never_recalled
+        ${qSelect}
+      FROM observations
+      WHERE tenant_id = ? AND status = 'active'
+      GROUP BY source
+      HAVING COUNT(*) >= ?
+      ORDER BY total_obs DESC
+      LIMIT ?
+    `).all(TENANT_ID, minObs, topN) as Array<{
+      source: string;
+      total_obs: number;
+      recalled_count: number;
+      avg_access_count: number;
+      stale_never_recalled: number;
+      avg_quality?: number;
+    }>;
+
+    const currentWeights: Record<string, number> = {
+      session: 1.00,
+      treg_scan: 0.95,
+      imprint: 0.90,
+      markdown_index: 0.85,
+      lantern_synthesis: 0.70,
+      greglite_scan: 0.50,
+    };
+
+    const results = rows.map(r => {
+      const recallRate = r.total_obs > 0 ? Math.round((r.recalled_count / r.total_obs) * 100) : 0;
+      const staleRate = r.total_obs > 0 ? Math.round((r.stale_never_recalled / r.total_obs) * 100) : 0;
+      const recommendedWeight = Math.round((0.50 + (recallRate / 100) * 0.50) * 100) / 100;
+      const currentWeight = currentWeights[r.source] ?? 0.60;
+      return {
+        source: r.source,
+        total_obs: r.total_obs,
+        recalled_count: r.recalled_count,
+        recall_rate_pct: recallRate,
+        stale_never_recalled: r.stale_never_recalled,
+        stale_rate_pct: staleRate,
+        avg_access_count: r.avg_access_count,
+        avg_quality: r.avg_quality ?? null,
+        current_weight: currentWeight,
+        recommended_weight: recommendedWeight,
+        weight_delta: Math.round((recommendedWeight - currentWeight) * 100) / 100,
+      };
+    });
+
+    const lowPerformers = results.filter(r => r.recall_rate_pct < 20 && r.total_obs >= 10);
+    const highPerformers = results.filter(r => r.recall_rate_pct >= 60);
+
+    return {
+      sources: results,
+      summary: {
+        total_sources: results.length,
+        low_performers: lowPerformers.map(r => r.source),
+        high_performers: highPerformers.map(r => r.source),
+        recommendation: lowPerformers.length > 0
+          ? `Consider reducing source_weight for: ${lowPerformers.map(r =>
+              `${r.source} (${r.recall_rate_pct}% recall, weight ${r.current_weight}→${r.recommended_weight})`
+            ).join(', ')}`
+          : 'All sources show acceptable recall rates (≥20%). No weight reductions recommended.',
+      },
+    };
+  } catch (e) {
+    return { error: `memory_source_quality failed: ${(e as Error).message}` };
+  }
+}
+
 export function createBrainHandlers(): Record<string, (input: Record<string, unknown>) => Promise<unknown>> {
   // PROMETHEUS-W2: wrap each handler in tickActivation() so the session
   // activation map decays once per brain_* tool call.
@@ -1619,5 +1727,6 @@ export function createBrainHandlers(): Record<string, (input: Record<string, unk
     imprint_set_intention: tick((i) => Promise.resolve(handleSetIntention(i as { entity: string; intention: string; metacognitive_state?: string; context?: string }))),
     imprint_resolve_intention: tick((i) => Promise.resolve(handleResolveIntention(i as { entity?: string; id?: number }))),
     project_context_scan: tick((i) => handleProjectContextScan(i as { project: string; task?: string })),
+    memory_source_quality: tick((i) => handleMemorySourceQuality(i as { top_n?: number; min_obs?: number })),
   };
 }

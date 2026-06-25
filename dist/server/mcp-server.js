@@ -40,6 +40,8 @@ import { autonomicTools, createAutonomicHandlers } from '../tools/autonomic-tool
 import { backlogToSprintTools, createBacklogToSprintHandlers } from '../tools/backlog-to-sprint-tools.js';
 // Phase 9: Eye of Sauron quality scan (eos_quick_scan)
 import { eosTools, createEosHandlers } from '../tools/eos-tools.js';
+// Phase 10: Behavioral Check (§0.8 motor program encoding)
+import { behavioralTools, createBehavioralHandlers } from '../tools/behavioral-tools.js';
 export class KernlMCPServer {
     server;
     db;
@@ -92,6 +94,8 @@ export class KernlMCPServer {
         register(backlogToSprintTools, createBacklogToSprintHandlers());
         // Phase 9: Eye of Sauron quality scan
         register(eosTools, createEosHandlers());
+        // Phase 10: Behavioral Check (§0.8 invariant motor programs)
+        register(behavioralTools, createBehavioralHandlers());
         // Version tool
         this.tools.set('kernl_version', {
             name: 'kernl_version',
@@ -104,7 +108,7 @@ export class KernlMCPServer {
             toolCount: this.tools.size,
             categories: ['Session', 'Project', 'Filesystem', 'Intelligence', 'Patterns', 'Gates',
                 'Process', 'Search', 'Files', 'Config', 'Chrome', 'ShadowDocs', 'Git',
-                'Backlog', 'Testing', 'Utility', 'Research', 'Brain', 'Autonomic'],
+                'Backlog', 'Testing', 'Utility', 'Research', 'Brain', 'Autonomic', 'Behavioral'],
         }));
         console.error(`[KERNL] Registered ${this.tools.size} tools (v5.1.0 — Brain layer active)`);
     }

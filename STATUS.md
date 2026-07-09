@@ -2,11 +2,11 @@
 
 **Status:** production
 **Version:** 3.0.0 (KERNL-BRAIN-02 v3.0 + Cognitive Organism)
-**Last Updated: 2026-06-19 (auto — feat: inject_sprint_context + memory_source_quality (AUT-202)
+**Last Updated: 2026-06-24 (auto — feat(behavioral): behavioral_check tool — §0.8 invariant mot)
 **Yuma Health:** 65/100 ORANGE (30 specs, 9 pass) (auto — Yuma)
-**Code Health:** 18/100 (26 critical, 359 warnings) (auto — EoS)
+**Code Health:** 20/100 (27 critical, 359 warnings) (auto — EoS)
 **Completion:** 87% (auto — 26 done, 4 pending)
-**Tests:** 2/2 passing (auto)
+**Tests:** failing (exit null)
 
 ---
 

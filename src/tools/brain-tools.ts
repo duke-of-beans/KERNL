@@ -1164,8 +1164,8 @@ async function handleImprint(input: { session_summary: string; outcomes?: string
     : '';
 
   const result = await callClaudeAPI(
-    `Session summary: ${input.session_summary}\n${input.outcomes ? 'Outcomes: ' + input.outcomes : ''}\n${input.corrections ? 'Corrections David made: ' + input.corrections : ''}\n\nRecent observations:\n${recentObs}${intentionsBlock}\n\nGenerate a post-session reflection with typed deltas:\n- ΔS: proposed changes to system prompt / bootstrap instructions\n- ΔU: updated understanding of David's preferences, patterns, working style\n- ΔT: proposed changes to tool configuration or workflow\n- ΔI: forward intentions — active hypotheses (with confidence), planned next moves, cognitive state during session\n  - hypothesis: what David/Claude thinks might be true, with confidence 0-1\n  - next_move: planned actions for next session\n  - state: cognitive mode during session (deep_flow, scattered, frustrated, eureka, systematic, exploratory)\n\nAlso identify: what worked well (reinforce), what failed (avoid), what patterns are emerging.\n\nRespond with JSON: {"deltas": {"system": ["delta1", ...], "user_model": ["delta1", ...], "tool_config": ["delta1", ...], "intentions": [{"subtype": "hypothesis"|"next_move"|"state", "content": "...", "confidence": 0.0-1.0, "related_entities": ["entity1"], "cognitive_state": "deep_flow"|"scattered"|"frustrated"|"eureka"|"systematic"|"exploratory"}]}, "reinforce": ["pattern to keep"], "avoid": ["pattern to stop"], "emerging_patterns": ["pattern noticed"], "wound_healing": {"phase": "hemostasis|inflammation|proliferation|remodeling|none", "description": "if any belief was damaged, where in the healing cascade"}${lifecycleField}}`,
-    'You are IMPRINT — a reflection and learning engine. Analyze sessions for structural learning opportunities. Be concrete and actionable. Deltas should be specific enough to implement. For ΔI intentions: hypotheses persist permanently (National Razor — never discard unproven ideas), next_moves get 72h expiry, state observations are metacognitive data. Follow the wound healing cascade for damaged beliefs. Respond with JSON only, no markdown fences.',
+    `Session summary: ${input.session_summary}\n${input.outcomes ? 'Outcomes: ' + input.outcomes : ''}\n${input.corrections ? 'Corrections David made: ' + input.corrections : ''}\n\nRecent observations:\n${recentObs}${intentionsBlock}\n\nGenerate a post-session reflection with typed deltas:\n- ΔS: proposed changes to system prompt / bootstrap instructions\n- ΔU: updated understanding of David's preferences, patterns, working style\n- ΔT: proposed changes to tool configuration or workflow\n- ΔSk: skill candidates — procedural knowledge gaps that should become installable Claude skills. Only flag when: (1) a correction maps to a task-type trigger (not universal constraint), (2) the pattern has recurred across sessions, (3) currently installed skills (portfolio-deploy, portfolio-environment, portfolio-design-system, portfolio-scaffold, portfolio-research, portfolio-code-quality, portfolio-voice) do not already cover it.\n- ΔI: forward intentions — active hypotheses (with confidence), planned next moves, cognitive state during session\n  - hypothesis: what David/Claude thinks might be true, with confidence 0-1\n  - next_move: planned actions for next session\n  - state: cognitive mode during session (deep_flow, scattered, frustrated, eureka, systematic, exploratory)\n\nAlso identify: what worked well (reinforce), what failed (avoid), what patterns are emerging.\n\nRespond with JSON: {"deltas": {"system": ["delta1", ...], "user_model": ["delta1", ...], "tool_config": ["delta1", ...], "intentions": [{"subtype": "hypothesis"|"next_move"|"state", "content": "...", "confidence": 0.0-1.0, "related_entities": ["entity1"], "cognitive_state": "deep_flow"|"scattered"|"frustrated"|"eureka"|"systematic"|"exploratory"}]}, "reinforce": ["pattern to keep"], "avoid": ["pattern to stop"], "emerging_patterns": ["pattern noticed"], "skill_deltas": [{"type": "new_skill|extend_existing|no_action", "existing_skill": "name or null", "trigger": "when this would fire", "content_signal": "what the skill should encode", "evidence": "what happened this session", "confidence": 0.0-1.0}], "wound_healing": {"phase": "hemostasis|inflammation|proliferation|remodeling|none", "description": "if any belief was damaged, where in the healing cascade"}${lifecycleField}}`,
+    'You are IMPRINT — a reflection and learning engine. Analyze sessions for structural learning opportunities. Be concrete and actionable. Deltas should be specific enough to implement. For ΔI intentions: hypotheses persist permanently (National Razor — never discard unproven ideas), next_moves get 72h expiry, state observations are metacognitive data. Follow the wound healing cascade for damaged beliefs. For ΔSk: only propose skills when confidence >= 0.5 (3+ sessions showing same pattern). Universal constraints stay in bootstrap, task-specific procedures become skills. Respond with JSON only, no markdown fences.',
     1024
   );
 
@@ -1178,7 +1178,7 @@ async function handleImprint(input: { session_summary: string; outcomes?: string
       const obsId = ulid();
       const deltaCount = (reflection.deltas?.system?.length || 0) + (reflection.deltas?.user_model?.length || 0) + (reflection.deltas?.tool_config?.length || 0);
       const intentionCount = reflection.deltas?.intentions?.length || 0;
-      const content = `IMPRINT reflection: ${deltaCount} deltas + ${intentionCount} ΔI intentions proposed. Reinforce: ${(reflection.reinforce || []).join(', ')}. Avoid: ${(reflection.avoid || []).join(', ')}. Wound healing: ${reflection.wound_healing?.phase || 'none'}`;
+      const content = `IMPRINT reflection: ${deltaCount} deltas + ${intentionCount} ΔI intentions + ${(reflection.skill_deltas || []).length} ΔSk skill candidates proposed. Reinforce: ${(reflection.reinforce || []).join(', ')}. Avoid: ${(reflection.avoid || []).join(', ')}. Wound healing: ${reflection.wound_healing?.phase || 'none'}`;
       db.prepare("INSERT INTO observations(id,tenant_id,content,source,tags,created_at,created_by,status,embedding_version,synthesis_depth) VALUES(?,?,?,'session','[\"imprint_reflection\"]',datetime('now'),'imprint','active',1,1)")
         .run(obsId, TENANT_ID, content);
 
@@ -1207,7 +1207,20 @@ async function handleImprint(input: { session_summary: string; outcomes?: string
         } catch { /* per-intention persistence is best-effort: observations.source CHECK rejects imprint_* sources */ }
       }
     }
-    // --- Intention lifecycle apply (PROMETHEUS-W3): best-effort, never blocks ---
+    // --- Persist ΔSk skill candidates as tagged observations ---
+    const skillDeltas = reflection.skill_deltas || [];
+    if (db && skillDeltas.length > 0) {
+        for (const sd of skillDeltas) {
+          if (sd.type === "no_action" || (sd.confidence || 0) < 0.5) continue;
+          try {
+            const skId = ulid();
+            const skContent = `\u0394Sk skill candidate: ${sd.type} | trigger: ${sd.trigger || "TBD"} | content: ${sd.content_signal || ""} | evidence: ${sd.evidence || ""} | confidence: ${sd.confidence || 0} | overlaps: ${sd.existing_skill || "none"}`;
+            db.prepare("INSERT INTO observations(id,tenant_id,content,source,tags,created_at,created_by,status,embedding_version,synthesis_depth) VALUES(?,?,?,'session','[\"skill_candidate\",\"imprint\"]',datetime('now'),'imprint','active',1,1)")
+              .run(skId, TENANT_ID, skContent);
+          } catch { /* skill_candidate persistence is best-effort */ }
+        }
+      }
+      // --- Intention lifecycle apply (PROMETHEUS-W3): best-effort, never blocks ---
     if (db && activeIntentions.length > 0 && Array.isArray(reflection.intention_lifecycle)) {
       try {
         const activeIds = new Set(activeIntentions.map(i => i.id));

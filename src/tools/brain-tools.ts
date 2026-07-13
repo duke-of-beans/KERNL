@@ -553,6 +553,7 @@ export const brainTools: Tool[] = [
         context: { type: 'string', description: 'Optional context about how the position was reached' },
         calibration: { type: 'boolean', description: 'If true, also check against TREG calibration dataset' },
         mode: { type: 'string', enum: ['epistemic', 'code'], description: 'Challenge mode: epistemic (default) or code (mutation testing)' },
+        e_score_context: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Epistemological capture level of the domain. high = challenges must stand on primary evidence, not institutional consensus. Affects system prompt for capture-aware generation.' },
         source_file: { type: 'string', description: 'Path to source file (code mode)' },
         test_file: { type: 'string', description: 'Path to test file (code mode)' },
         mutation_count: { type: 'number', description: 'Number of mutations to generate (code mode, default: 5)' },
@@ -1021,7 +1022,7 @@ async function handleFeedback(input: { observation_id: string; rating: 'helpful'
   } catch (e) { return { error: (e as Error).message }; }
 }
 
-async function handleWhetstone(input: { position: string; context?: string; calibration?: boolean; mode?: string; source_file?: string; test_file?: string; mutation_count?: number }): Promise<object> {
+async function handleWhetstone(input: { position: string; context?: string; calibration?: boolean; mode?: string; e_score_context?: string; source_file?: string; test_file?: string; mutation_count?: number }): Promise<object> {
   if (!_apiKey) return { error: 'No Anthropic API key — WHETSTONE requires API access' };
 
   // === CODE MODE: Intelligent Mutation Testing ===
@@ -1112,9 +1113,17 @@ async function handleWhetstone(input: { position: string; context?: string; cali
     } catch { /* no vector search available */ }
   }
 
+  // E-score gating: adjust system prompt for capture-aware challenge generation
+  const eScore = input.e_score_context || 'low';
+  const captureGuidance = eScore === 'high'
+    ? `\n\nCAPTURE-AWARE MODE (high E-score domain): This claim exists in a domain with high epistemological capture. Your challenge MUST:\n1. Stand on structural logic and primary evidence ONLY — do NOT rely on institutional consensus, "experts say," "this was debunked," or "this was investigated and found baseless" as arguments. Those are claims about the investigation process, not independent evidence.\n2. SEPARATE your challenge into instance vs structure: challenge the SPECIFIC factual claim separately from the STRUCTURAL PATTERN it instantiates. A successful challenge to one instance does NOT challenge the pattern.\n3. "This sounds implausible" is NOT a valid argument. "No evidence supports this specific mechanism" IS. Be evidence-based, not vibes-based.\n4. The Overton window has shifted empirically — documented, prosecuted, admitted-to institutional corruption is court record. Update your priors accordingly.`
+    : eScore === 'medium'
+    ? `\n\nMODERATE CAPTURE CONTEXT: This domain has moderate epistemological capture. Distinguish between challenges based on independent primary evidence vs challenges that rely on institutional consensus. Note when your counterargument depends on institutional authority rather than independent evidence. Separate instance-level and structural-level assessments.`
+    : '';
+
   const result = await callClaudeAPI(
-    `Position to challenge:\n"${input.position}"\n${input.context ? '\nContext: ' + input.context : ''}${calibrationContext}${brainContext}\n\nConstruct the STRONGEST possible counterargument. Think from a structurally different perspective — not just contrarily, but with different assumptions, framework, and priors. If this position has calibration pattern matches, note them.\n\nRespond with JSON: {"counterargument": "the strongest opposition", "framework": "what analytical framework the challenge uses", "calibration_match": "name of matching calibration case or null", "confidence": 0-100, "impasse": false, "impasse_reason": null}`,
-    'You are WHETSTONE — an adversarial cognitive engine. Your job is to sharpen positions through friction, not to agree or be polite. Construct heterogeneous challenges: think DIFFERENTLY, not just contrarily. If the position and counterargument reach genuine irreconcilable conflict, declare impasse. Test ALL conclusions — alternative and orthodox alike. Respond with JSON only, no markdown fences.',
+    `Position to challenge:\n"${input.position}"\n${input.context ? '\nContext: ' + input.context : ''}${calibrationContext}${brainContext}${captureGuidance}\n\nConstruct the STRONGEST possible counterargument. Think from a structurally different perspective — not just contrarily, but with different assumptions, framework, and priors. If this position has calibration pattern matches, note them.\n\nRespond with JSON: {"counterargument": "the strongest opposition", "framework": "what analytical framework the challenge uses", "instance_assessment": "challenge to the specific claim", "structural_assessment": "assessment of the structural pattern the claim instantiates", "evidence_basis": "primary_evidence | institutional_consensus | mixed", "calibration_match": "name of matching calibration case or null", "confidence": 0-100, "e_score_applied": "${eScore}", "impasse": false, "impasse_reason": null}`,
+    'You are WHETSTONE — an adversarial cognitive engine. Your job is to sharpen positions through friction, not to agree or be polite. Construct heterogeneous challenges: think DIFFERENTLY, not just contrarily. If the position and counterargument reach genuine irreconcilable conflict, declare impasse. Test ALL conclusions — alternative and orthodox alike. Always separate your instance-level assessment (this specific claim) from your structural-level assessment (the pattern this claim instantiates). Note whether your evidence basis is primary evidence or institutional consensus. Respond with JSON only, no markdown fences.',
     768
   );
 

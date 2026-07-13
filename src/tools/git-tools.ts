@@ -76,6 +76,20 @@ export const gitTools: Tool[] = [
       required: ['project'],
     },
   },
+  {
+    name: 'git_push',
+    description: 'Push commits to remote origin. Uses execSync (same as smart_commit) for reliable output capture on Windows. Always call after smart_commit — smart_commit is LOCAL ONLY.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Project ID' },
+        branch: { type: 'string', description: 'Branch to push (default: current branch)' },
+        remote: { type: 'string', description: 'Remote name (default: origin)' },
+        force: { type: 'boolean', description: 'Force push (default: false)' },
+      },
+      required: ['project'],
+    },
+  },
 ];
 
 // ==========================================================================
@@ -84,12 +98,12 @@ export const gitTools: Tool[] = [
 
 export function createGitHandlers(db: ProjectDatabase): Record<string, (input: Record<string, unknown>) => Promise<unknown>> {
   
-  function execInProject(projectPath: string, command: string): string {
+  function execInProject(projectPath: string, command: string, timeoutMs = 30000): string {
     try {
       return execSync(command, { 
         cwd: projectPath, 
         encoding: 'utf-8',
-        timeout: 30000
+        timeout: timeoutMs
       }).trim();
     } catch (error) {
       const err = error as { stderr?: string; message?: string };
@@ -220,6 +234,93 @@ export function createGitHandlers(db: ProjectDatabase): Record<string, (input: R
       }
       
       return results;
+    },
+
+    // ================================================================
+    // GIT PUSH — the missing half of the deploy pipeline
+    // ================================================================
+    git_push: async (input) => {
+      const projectId = input.project as string;
+      const project = db.getProject(projectId);
+      if (!project) return { error: `Project not found: ${projectId}` };
+
+      const remote = (input.remote as string) || 'origin';
+      const force = input.force === true;
+
+      try {
+        // Get current branch if not specified
+        const branch = (input.branch as string) || execInProject(project.path, 'git branch --show-current');
+        
+        // Get local HEAD before push
+        const localHead = execInProject(project.path, 'git rev-parse HEAD');
+        const localHeadShort = localHead.substring(0, 7);
+
+        // Get commit count ahead of remote
+        let ahead = '?';
+        try {
+          ahead = execInProject(project.path, `git rev-list --count ${remote}/${branch}..HEAD`);
+        } catch {
+          ahead = 'unknown (remote branch may not exist yet)';
+        }
+
+        // Push — 60s timeout for network operations
+        const pushArgs = force ? '--force' : '';
+        const pushCmd = `git push ${pushArgs} ${remote} ${branch}`.replace(/\s+/g, ' ').trim();
+        
+        let pushOutput: string;
+        try {
+          // git push writes progress to stderr, actual result to stdout
+          const result = execSync(pushCmd, {
+            cwd: project.path,
+            encoding: 'utf-8',
+            timeout: 60000,
+            // Capture both stdout and stderr
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+          pushOutput = (result || '').trim();
+        } catch (error) {
+          const err = error as { stderr?: string; stdout?: string; message?: string };
+          // git push writes most output to stderr even on success
+          const stderr = (err.stderr || '').trim();
+          const stdout = (err.stdout || '').trim();
+          
+          // Check if it's actually an error or just stderr progress output
+          if (stderr.includes('->') || stderr.includes('Everything up-to-date')) {
+            pushOutput = stderr;
+          } else {
+            return {
+              error: 'Push failed',
+              details: stderr || stdout || err.message,
+              hint: stderr.includes('GH007') 
+                ? 'Email privacy block. Run: git config user.email "213939863+duke-of-beans@users.noreply.github.com" then git commit --amend --reset-author --no-edit'
+                : stderr.includes('rejected')
+                  ? 'Remote has changes not in local. Pull first or use force: true'
+                  : undefined
+            };
+          }
+        }
+
+        // Verify push by checking remote HEAD
+        let remoteHead = 'unknown';
+        try {
+          remoteHead = execInProject(project.path, `git rev-parse ${remote}/${branch}`).substring(0, 7);
+        } catch { /* remote ref may not update immediately */ }
+
+        return {
+          success: true,
+          project: projectId,
+          branch,
+          remote,
+          local_head: localHeadShort,
+          remote_head: remoteHead,
+          commits_pushed: ahead,
+          force,
+          output: pushOutput,
+          message: `Pushed ${branch} to ${remote} (${localHeadShort})`,
+        };
+      } catch (err: any) {
+        return { error: `Push failed: ${err.message}` };
+      }
     },
 
     session_package: async (input) => {

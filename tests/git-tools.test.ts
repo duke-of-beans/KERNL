@@ -30,12 +30,13 @@ const createMockDb = () => ({
 describe('gitTools', () => {
   describe('tool definitions', () => {
     it('should export correct number of tools', () => {
-      expect(gitTools).toHaveLength(4);
+      expect(gitTools).toHaveLength(5);
     });
 
-    it('should define dev_branch and merge_to_main tools', () => {
+    it('should define dev_branch, merge_to_main, and git_push tools', () => {
       expect(gitTools.find(tool => tool.name === 'dev_branch')).toBeDefined();
       expect(gitTools.find(tool => tool.name === 'merge_to_main')).toBeDefined();
+      expect(gitTools.find(tool => tool.name === 'git_push')).toBeDefined();
     });
 
     it('should define smart_commit tool correctly', () => {
@@ -107,7 +108,7 @@ describe('createGitHandlers', () => {
           project: 'test-project',
           buildVerified: true,
           testsVerified: false,
-          testsNote: 'No smoke/contract tests defined — gate open',
+          testsNote: 'No smoke/contract tests defined \u2014 gate open',
           committed: true,
           message: 'feat: add new feature'
         });
@@ -325,7 +326,7 @@ describe('createGitHandlers', () => {
 
         expect(result).toMatchObject({
           testsVerified: false,
-          testsNote: 'Yuma tables not available — gate skipped',
+          testsNote: 'Yuma tables not available \u2014 gate skipped',
           committed: true
         });
       });

@@ -102,6 +102,47 @@ function getBrainDb(): BrainDB | null {
   }
 }
 
+// --- Turso dual-write (Phase 2: parallel cloud architecture) ---
+// Fire-and-forget write to Turso cloud after every local brain_remember.
+// Never blocks local write. Failures logged to stderr, never thrown.
+let _tursoClient: { execute: (stmt: { sql: string; args: unknown[] }) => Promise<unknown> } | null = null;
+let _tursoFailed = false;
+
+function getTursoClient(): typeof _tursoClient {
+  if (_tursoFailed) return null;
+  if (_tursoClient) return _tursoClient;
+  try {
+    const { createClient } = _require('@libsql/client') as { createClient: (opts: { url: string; authToken: string }) => typeof _tursoClient };
+    const envStr = fs.readFileSync('D:\\Meta\\.env', 'utf8');
+    const url = envStr.match(/TURSO_DATABASE_URL=(.+)/)?.[1]?.trim();
+    const token = envStr.match(/TURSO_AUTH_TOKEN=(.+)/)?.[1]?.trim();
+    if (!url || !token) { _tursoFailed = true; return null; }
+    _tursoClient = createClient({ url, authToken: token });
+    console.error('[brain-tools] Turso dual-write client connected');
+    return _tursoClient;
+  } catch (e) { _tursoFailed = true; console.error('[brain-tools] Turso client init failed:', (e as Error).message); return null; }
+}
+
+function tursoSyncObservation(data: {
+  id: string; tenant_id: string; entity_id: string | null; content: string;
+  source: string; content_hash: string; created_at: string;
+  embedding: Buffer | null; quality_score: number | null;
+  surprisal: number | null; compression_ratio: number | null;
+}): void {
+  const client = getTursoClient();
+  if (!client) return;
+  client.execute({
+    sql: `INSERT OR IGNORE INTO observations (id,tenant_id,entity_id,content,source,tags,content_hash,created_at,created_by,status,embedding_version,synthesis_depth,embedding,quality_score,surprisal,compression_ratio)
+          VALUES (?,?,?,?,?,'[]',?,?,'brain_remember','active',1,0,?,?,?,?)`,
+    args: [
+      data.id, data.tenant_id, data.entity_id, data.content, data.source,
+      data.content_hash, data.created_at,
+      data.embedding ? new Uint8Array(data.embedding) : null,
+      data.quality_score, data.surprisal, data.compression_ratio
+    ]
+  }).catch((e: Error) => console.error('[turso-dual-write] observation sync failed:', e.message));
+}
+
 const ENC = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 function ulid(): string {
   const now = Date.now(); let str = '', mod = now;
@@ -973,6 +1014,18 @@ async function handleRemember(input: { content: string; entity?: string; source?
           .run(qualityResult.quality_score, qualityResult.surprisal, qualityResult.compression_ratio, id);
       } catch { /* quality scoring best-effort; NULL → Pass 15 backfill */ }
     } catch { /* saved without embedding — quality_score stays NULL for Pass 15 */ }
+    // --- Phase 2: Turso dual-write (fire-and-forget, never blocks) ---
+    try {
+      const embRow = db.prepare('SELECT embedding FROM observations WHERE id=?').get(id) as { embedding: Buffer | null } | null;
+      tursoSyncObservation({
+        id, tenant_id: TENANT_ID, entity_id: entityId, content: input.content,
+        source: _source, content_hash: contentHash, created_at: now,
+        embedding: embRow?.embedding ?? null,
+        quality_score: qualityResult?.quality_score ?? null,
+        surprisal: qualityResult?.surprisal ?? null,
+        compression_ratio: qualityResult?.compression_ratio ?? null,
+      });
+    } catch { /* turso sync is strictly best-effort */ }
     return {
       observation_id: id,
       entity_resolved: entityResolved,

@@ -36,13 +36,12 @@ export declare function createFileOperationsHandlers(db: ProjectDatabase): {
         content: string;
         mode?: "rewrite" | "append";
     }) => Promise<{
+        warning?: string | undefined;
         success: boolean;
         path: string;
         error?: undefined;
     } | {
         error: string;
-        success?: undefined;
-        path?: undefined;
     }>;
     pm_search_files: (input: {
         project: string;

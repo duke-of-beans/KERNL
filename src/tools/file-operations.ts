@@ -159,7 +159,23 @@ export function createFileOperationsHandlers(db: ProjectDatabase) {
           const existing = existsSync(fullPath) ? readFileSync(fullPath, 'utf-8') : '';
           writeFileSync(fullPath, existing + input.content, 'utf-8');
         } else {
+          // DESTRUCTIVE WRITE GUARD (2026-08-08)
+          // If rewriting an existing file, snapshot to .bak first
+          let warning: string | undefined;
+          if (existsSync(fullPath)) {
+            const existing = readFileSync(fullPath, 'utf-8');
+            const existingLines = existing.split('\n').length;
+            const newLines = input.content.split('\n').length;
+            // Always create backup before rewrite
+            const bakPath = fullPath + '.bak';
+            writeFileSync(bakPath, existing, 'utf-8');
+            // Warn if new content is dramatically smaller (>80% reduction)
+            if (existingLines > 10 && newLines < existingLines * 0.2) {
+              warning = `CAUTION: replacing ${existingLines} lines with ${newLines} lines (${Math.round((1 - newLines/existingLines) * 100)}% reduction). Backup saved to ${bakPath}`;
+            }
+          }
           writeFileSync(fullPath, input.content, 'utf-8');
+          return { success: true, path: fullPath, ...(warning ? { warning } : {}) };
         }
         return { success: true, path: fullPath };
       } catch (error) {
